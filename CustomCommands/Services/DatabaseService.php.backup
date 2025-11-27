@@ -1,0 +1,262 @@
+<?php
+
+namespace Longman\TelegramBot\Commands\SystemCommands\Services;
+
+/**
+ * Database service to centralize all database operations
+ * Replaces scattered database connections and queries
+ */
+class DatabaseService
+{
+    private string $host;
+    private string $username; 
+    private string $password;
+    private string $database;
+    private ?\mysqli $connection = null;
+
+    // Константы уровней доступа
+    public const ACCESS_LEVEL_GUEST = 0;
+    public const ACCESS_LEVEL_USER = 1;
+    public const ACCESS_LEVEL_SUPERVISOR = 2;
+    public const ACCESS_LEVEL_ADMIN = 3;
+    public const ACCESS_LEVEL_SUPER_ADMIN = 4;
+
+    public function __construct(
+        string $host = '82.146.42.213',
+        string $username = 'WizardJIOCb', 
+        string $password = '',
+        string $database = 'tg_bot'
+    ) {
+        $this->host = $host;
+        $this->username = $username;
+        $this->password = $password;
+        $this->database = $database;
+    }
+
+    /**
+     * Get database connection
+     */
+    private function getConnection(): \mysqli
+    {
+        if ($this->connection === null) {
+            $this->connection = new \mysqli($this->host, $this->username, $this->password, $this->database);
+            
+            if ($this->connection->connect_error) {
+                throw new \Exception("Database connection failed: " . $this->connection->connect_error);
+            }
+        }
+        
+        return $this->connection;
+    }
+
+    /**
+     * Get user data from ozna_data table
+     */
+    public function getUserData(int $userId): array
+    {
+        $query = "SELECT * FROM ozna_data WHERE user_id = ?";
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("i", $userId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $user = $result->fetch_assoc();
+
+        if (!$user) {
+            // Insert new user record if not exists
+            $insertQuery = "INSERT INTO ozna_data (user_id) VALUES (?)";
+            $insertStmt = $this->getConnection()->prepare($insertQuery);
+            $insertStmt->bind_param("i", $userId);
+            $insertStmt->execute();
+            return [];
+        }
+
+        $userData = $user ? json_decode($user["data"], true) : [];
+
+        // Debug: Log the user data
+        error_log("DatabaseService: User {$userId} raw data: " . print_r($user, true));
+        error_log("DatabaseService: User {$userId} decoded data: " . print_r($userData, true));
+
+        // Set default values if not present
+        if (!isset($userData["fio"])) $userData["fio"] = "";
+        if (!isset($userData["functional_direction"])) $userData["functional_direction"] = "Не указано";
+        // Установка уровня доступа по умолчанию (гость)
+        if (!isset($userData["access_level"])) {
+            $userData["access_level"] = self::ACCESS_LEVEL_GUEST;
+            error_log("DatabaseService: User {$userId} access level not set, defaulting to GUEST");
+        } else {
+            error_log("DatabaseService: User {$userId} access level from database: {$userData["access_level"]}");
+        }
+
+        return $userData;
+    }
+
+    /**
+     * Update user access level
+     */
+    public function updateUserAccessLevel(int $userId, int $accessLevel): bool
+    {
+        $userData = $this->getUserData($userId);
+        $userData["access_level"] = $accessLevel;
+        
+        return $this->updateUserData($userId, $userData);
+    }
+
+    /**
+     * Update user data in JSON format
+     */
+    public function updateUserData(int $userId, array $userData): bool
+    {
+        $query = "UPDATE ozna_data SET data = ? WHERE user_id = ?";
+        $jsonData = json_encode($userData, JSON_UNESCAPED_UNICODE);
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("si", $jsonData, $userId);
+        
+        return $stmt->execute();
+    }
+
+    /**
+     * Set user FIO
+     */
+    public function setUserFio(int $userId, string $fio): bool
+    {
+        $userData = $this->getUserData($userId);
+        $userData["fio"] = $fio;
+        
+        return $this->updateUserData($userId, $userData);
+    }
+
+    /**
+     * Set user functional direction
+     */
+    public function setUserFunctionalDirection(int $userId, string $direction): bool
+    {
+        $userData = $this->getUserData($userId);
+        $userData["functional_direction"] = $direction;
+        
+        return $this->updateUserData($userId, $userData);
+    }
+
+    /**
+     * Get user access level
+     */
+    public function getUserAccessLevel(int $userId): int
+    {
+        $userData = $this->getUserData($userId);
+        $accessLevel = $userData["access_level"] ?? self::ACCESS_LEVEL_GUEST;
+        
+        // Debug: Log the user access level
+        error_log("DatabaseService: User {$userId} access level: {$accessLevel}");
+        
+        return $accessLevel;
+    }
+
+    /**
+     * Check if user has recent tabel entry (within 10 minutes)
+     * Super admins are exempt from this check
+     */
+    public function hasRecentTabelEntry(int $userId, bool $isSuperAdmin = false): ?array
+    {
+        // Суперадмины могут отправлять сообщения без ограничения по времени
+        if ($isSuperAdmin) {
+            return null;
+        }
+        
+        $query = "SELECT COUNT(*) as count, ot.dt FROM ozna_tabel ot 
+                  WHERE ot.user_id = ? AND ot.dt > DATE_SUB(NOW(), INTERVAL 600 SECOND)";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("i", $userId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result->fetch_assoc();
+        
+        return ($row && $row['count'] > 0) ? $row : null;
+    }
+
+    /**
+     * Add user tabel entry
+     */
+    public function addUserTabel(int $userId, string $message): bool
+    {
+        // Clean empty usernames
+        $message = str_replace("@ ", "", $message);
+        
+        $query = "INSERT INTO tg_bot.ozna_tabel (user_id, message, dt) VALUES (?, ?, current_timestamp())";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("is", $userId, $message);
+        
+        return $stmt->execute();
+    }
+
+    /**
+     * Get user's last 10 tabel entries
+     */
+    public function getUserLastTabelEntries(int $userId, int $limit = 10): array
+    {
+        $query = "SELECT dt + INTERVAL 2 HOUR as dt, message FROM ozna_tabel ot 
+                  WHERE ot.user_id = ? ORDER BY dt DESC LIMIT ?";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("ii", $userId, $limit);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        $entries = [];
+        while ($row = $result->fetch_assoc()) {
+            $entries[] = $row;
+        }
+        
+        return array_reverse($entries);
+    }
+
+    /**
+     * Get all user's tabel entries for export
+     */
+    public function getUserAllTabelEntries(int $userId): array
+    {
+        $query = "SELECT dt + INTERVAL 2 HOUR as dt, message FROM ozna_tabel ot 
+                  WHERE ot.user_id = ? ORDER BY dt ASC";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("i", $userId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        $entries = [];
+        while ($row = $result->fetch_assoc()) {
+            $entries[] = $row;
+        }
+        
+        return $entries;
+    }
+
+    /**
+     * Create CSV file from tabel entries
+     */
+    public function createTabelCsvFile(int $userId, array $entries): string
+    {
+        $filePath = '/var/www/api.ladyzenko.pro/tg/ozna/Uploads/tabel_profile_' . $userId . '.csv';
+        
+        $output = fopen($filePath, 'w');
+        fputcsv($output, ["Дата", "Событие"]);
+        
+        foreach ($entries as $entry) {
+            fputcsv($output, $entry);
+        }
+        
+        fclose($output);
+        
+        return $filePath;
+    }
+
+    /**
+     * Close database connection
+     */
+    public function __destruct()
+    {
+        if ($this->connection) {
+            $this->connection->close();
+        }
+    }
+}

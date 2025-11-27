@@ -1,0 +1,15 @@
+{
+    "require": {
+        "longman/telegram-bot": "^0.83.1",
+        "phpoffice/phpspreadsheet": "^5.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "Longman\\TelegramBot\\Commands\\SystemCommands\\Services\\": "CustomCommands/Services/",
+            "Longman\\TelegramBot\\Commands\\SystemCommands\\Handlers\\": "CustomCommands/Handlers/",
+            "Longman\\TelegramBot\\Commands\\SystemCommands\\": "CustomCommands/",
+            "Longman\\TelegramBot\\Commands\\UserCommands\\": "CustomCommands/",
+            "Longman\\TelegramBot\\Commands\\AdminCommands\\": "CustomCommands/"
+        }
+    }
+}

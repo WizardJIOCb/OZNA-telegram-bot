@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Admin Button Fix Verification</title>
+</head>
+<body>
+    <h1>Admin Button Fix Verification</h1>
+    
+    <h2>Changes Made:</h2>
+    <ul>
+        <li>Disabled TextmenuCommand to prevent conflicts with GenericmessageCommand</li>
+        <li>Ensured GenericmessageCommand properly handles the Admin button</li>
+        <li>Added debugging to track which command handles which messages</li>
+        <li>Implemented proper access level checking for the Admin button</li>
+    </ul>
+    
+    <h2>Verification Steps:</h2>
+    <ol>
+        <li>Check that TextmenuCommand.disabled file exists</li>
+        <li>Verify GenericmessageCommand.php contains Admin button handling code</li>
+        <li>Test the Admin button in the Telegram bot</li>
+    </ol>
+    
+    <h2>Expected Behavior:</h2>
+    <ul>
+        <li>For users with admin access (level 2+): Show admin panel with project management and access requests options</li>
+        <li>For regular users (level 0-1): Show request access prompt with "Запросить доступ" button</li>
+    </ul>
+    
+    <h2>Files Modified:</h2>
+    <ul>
+        <li>Renamed TextmenuCommand.php to TextmenuCommand.disabled</li>
+        <li>Updated GenericmessageCommand.php with debugging and proper Admin button handling</li>
+    </ul>
+</body>
+</html>

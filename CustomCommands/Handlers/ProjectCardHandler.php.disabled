@@ -1,0 +1,413 @@
+<?php
+
+namespace Longman\TelegramBot\Commands\SystemCommands\Handlers;
+
+use Longman\TelegramBot\Entities\ServerResponse;
+use Longman\TelegramBot\Conversation;
+use Longman\TelegramBot\Request;
+use Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\ProjectCardService;
+
+/**
+ * Handler for project card management
+ */
+class ProjectCardHandler
+{
+    private MessageService $messageService;
+    private DatabaseService $databaseService;
+    private ?ProjectCardService $projectCardService = null;
+
+    public function __construct(
+        MessageService $messageService,
+        DatabaseService $databaseService
+    ) {
+        $this->messageService = $messageService;
+        $this->databaseService = $databaseService;
+        // Don't initialize ProjectCardService here - do it lazily when needed
+    }
+    
+    /**
+     * Get ProjectCardService instance (lazy loading)
+     */
+    private function getProjectCardService(): ProjectCardService
+    {
+        if ($this->projectCardService === null) {
+            $this->projectCardService = new ProjectCardService($this->databaseService);
+        }
+        return $this->projectCardService;
+    }
+
+    public function canHandle(string $callbackData): bool
+    {
+        return str_starts_with($callbackData, 'proj_card_');
+    }
+
+    public function handle($callbackQuery, string $callbackData, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        
+        // Проверка прав доступа (только админы)
+        $userAccessLevel = $this->databaseService->getUserAccessLevel($userId);
+        if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_ADMIN) {
+            $text = '⚠️ <b>Доступ ограничен</b>
+
+Управление карточками проектов доступно только для Администраторов и Суперадминистраторов.';
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+
+        // Роутинг по типу callback
+        if ($callbackData === 'proj_card_menu') {
+            return $this->showMainMenu($chatId);
+        }
+        
+        if ($callbackData === 'proj_card_get_template') {
+            return $this->sendTemplate($chatId);
+        }
+        
+        if ($callbackData === 'proj_card_upload') {
+            return $this->promptFileUpload($chatId, $conversation);
+        }
+        
+        if ($callbackData === 'proj_card_list') {
+            return $this->showProjectCardsList($chatId);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_card_view_')) {
+            $projectCode = str_replace('proj_card_view_', '', $callbackData);
+            return $this->viewProjectCard($chatId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_card_export_')) {
+            $projectCode = str_replace('proj_card_export_', '', $callbackData);
+            return $this->exportProjectCard($chatId, $projectCode);
+        }
+
+        return $this->messageService->sendMessage($chatId, 'Неизвестная команда');
+    }
+
+    public function getPriority(): int
+    {
+        return 20;
+    }
+
+    /**
+     * Show main menu for project cards
+     */
+    private function showMainMenu(string $chatId): ServerResponse
+    {
+        $text = '🗂️ <b>Карточки проектов</b>
+
+Управление карточками проектов:';
+
+        $keyboard = [
+            [
+                ['text' => '📥 Загрузить карточку', 'callback_data' => 'proj_card_upload']
+            ],
+            [
+                ['text' => '📋 Список карточек', 'callback_data' => 'proj_card_list']
+            ],
+            [
+                ['text' => '📄 Скачать шаблон', 'callback_data' => 'proj_card_get_template']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_УправлениеПроектом']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Send Excel template to user
+     */
+    private function sendTemplate(string $chatId): ServerResponse
+    {
+        try {
+            $filePath = $this->getProjectCardService()->generateTemplate();
+            
+            $text = '📄 <b>Шаблон карточки проекта</b>
+
+Заполните шаблон и отправьте обратно боту для загрузки.
+
+<b>Инструкция:</b>
+1. Откройте файл в Excel
+2. Заполните все листы:
+   • <b>Основная информация</b> - данные проекта
+   • <b>Вехи ШМР</b> - плановые вехи шеф-монтажа
+   • <b>Вехи ПНР</b> - плановые вехи пусконаладки
+3. Сохраните файл
+4. Отправьте его обратно боту';
+
+            // Отправляем файл
+            Request::sendDocument([
+                'chat_id' => $chatId,
+                'document' => Request::encodeFile($filePath),
+                'caption' => $text,
+                'parse_mode' => 'HTML'
+            ]);
+
+            // Удаляем временный файл
+            if (file_exists($filePath)) {
+                unlink($filePath);
+            }
+
+            return Request::emptyResponse();
+            
+        } catch (\Exception $e) {
+            error_log("ProjectCardHandler::sendTemplate error: " . $e->getMessage());
+            return $this->messageService->sendMessage(
+                $chatId,
+                '❌ Ошибка при генерации шаблона: ' . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Prompt user to upload file
+     */
+    private function promptFileUpload(string $chatId, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['awaiting_project_card_file'] = true;
+        $conversation->update();
+
+        $text = '📥 <b>Загрузка карточки проекта</b>
+
+Отправьте заполненный Excel-файл с карточкой проекта.
+
+Если у вас нет шаблона, используйте кнопку "📄 Скачать шаблон".';
+
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => 'proj_card_menu']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Process uploaded Excel file
+     */
+    public function processUploadedFile(string $chatId, int $userId, string $filePath, Conversation $conversation): ServerResponse
+    {
+        // Проверка прав доступа
+        $userAccessLevel = $this->databaseService->getUserAccessLevel($userId);
+        if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_ADMIN) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '⚠️ У вас нет прав для загрузки карточек проектов.'
+            );
+        }
+
+        try {
+            // Импорт из Excel
+            $result = $this->getProjectCardService()->importFromExcel($filePath, $userId);
+
+            // Очищаем состояние ожидания
+            unset($conversation->notes['awaiting_project_card_file']);
+            $conversation->update();
+
+            if ($result['success']) {
+                $text = $result['message'];
+                
+                $keyboard = [
+                    [
+                        ['text' => '👁️ Просмотреть карточку', 'callback_data' => 'proj_card_view_' . $result['project_code']]
+                    ],
+                    [
+                        ['text' => '📋 Список карточек', 'callback_data' => 'proj_card_list']
+                    ],
+                    [
+                        ['text' => '⬅️ Главное меню', 'callback_data' => 'proj_card_menu']
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            } else {
+                $text = '❌ <b>Ошибка импорта</b>
+
+' . $result['message'];
+                
+                $keyboard = [
+                    [
+                        ['text' => '🔄 Попробовать снова', 'callback_data' => 'proj_card_upload']
+                    ],
+                    [
+                        ['text' => '⬅️ Главное меню', 'callback_data' => 'proj_card_menu']
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+
+        } catch (\Exception $e) {
+            error_log("ProjectCardHandler::processUploadedFile error: " . $e->getMessage());
+            
+            return $this->messageService->sendMessage(
+                $chatId,
+                '❌ Ошибка при обработке файла: ' . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Show list of all project cards
+     */
+    private function showProjectCardsList(string $chatId): ServerResponse
+    {
+        $cards = $this->getProjectCardService()->getAllProjectCards();
+
+        if (empty($cards)) {
+            $text = '📋 <b>Список карточек проектов</b>
+
+Карточки проектов ещё не созданы.';
+            
+            $keyboard = [
+                [
+                    ['text' => '📥 Загрузить карточку', 'callback_data' => 'proj_card_upload']
+                ],
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'proj_card_menu']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+
+        $text = '📋 <b>Список карточек проектов</b>
+
+Всего карточек: ' . count($cards) . '
+
+Выберите проект для просмотра:';
+
+        $keyboard = [];
+        foreach ($cards as $card) {
+            $buttonText = "{$card['project_code']} - {$card['project_name']}";
+            if (mb_strlen($buttonText) > 60) {
+                $buttonText = mb_substr($buttonText, 0, 57) . '...';
+            }
+            
+            $keyboard[] = [
+                ['text' => $buttonText, 'callback_data' => 'proj_card_view_' . $card['project_code']]
+            ];
+        }
+
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => 'proj_card_menu']
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * View project card details
+     */
+    private function viewProjectCard(string $chatId, string $projectCode): ServerResponse
+    {
+        $card = $this->getProjectCardService()->getProjectCard($projectCode);
+
+        if (!$card) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '❌ Карточка проекта не найдена.'
+            );
+        }
+
+        // Получаем вехи
+        $smrMilestones = $this->getProjectCardService()->getMilestones($projectCode, 'ШМР');
+        $pnrMilestones = $this->getProjectCardService()->getMilestones($projectCode, 'ПНР');
+
+        // Формируем текст карточки
+        $text = "🗂️ <b>Карточка проекта {$card['project_code']}</b>\n\n";
+        
+        $text .= "<b>📌 Основная информация:</b>\n";
+        $text .= "• Наименование: {$card['project_name']}\n";
+        if (!empty($card['customer_name'])) {
+            $text .= "• Заказчик: {$card['customer_name']}\n";
+        }
+        if (!empty($card['business_unit_name'])) {
+            $text .= "• БН: {$card['business_unit_name']}\n";
+        }
+        $text .= "\n";
+
+        // ШМР
+        $text .= "<b>🔧 Шеф-монтаж (ШМР):</b>\n";
+        $text .= "• Плановая трудоёмкость: " . number_format($card['smr_planned_hours'], 2) . " ч\n";
+        if (!empty($smrMilestones)) {
+            $text .= "• Вехи:\n";
+            foreach ($smrMilestones as $milestone) {
+                $text .= "  - {$milestone['milestone_name']}: " . number_format($milestone['planned_hours'], 2) . " ч\n";
+            }
+        }
+        $text .= "\n";
+
+        // ПНР
+        $text .= "<b>⚙️ Пусконаладка (ПНР):</b>\n";
+        $text .= "• Плановая трудоёмкость: " . number_format($card['pnr_planned_hours'], 2) . " ч\n";
+        if (!empty($pnrMilestones)) {
+            $text .= "• Вехи:\n";
+            foreach ($pnrMilestones as $milestone) {
+                $text .= "  - {$milestone['milestone_name']}: " . number_format($milestone['planned_hours'], 2) . " ч\n";
+            }
+        }
+
+        $keyboard = [
+            [
+                ['text' => '📤 Экспортировать в Excel', 'callback_data' => 'proj_card_export_' . $projectCode]
+            ],
+            [
+                ['text' => '📋 К списку карточек', 'callback_data' => 'proj_card_list']
+            ],
+            [
+                ['text' => '⬅️ Главное меню', 'callback_data' => 'proj_card_menu']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Export project card to Excel and send to user
+     */
+    private function exportProjectCard(string $chatId, string $projectCode): ServerResponse
+    {
+        try {
+            $filePath = $this->getProjectCardService()->exportToExcel($projectCode);
+
+            if (!$filePath) {
+                return $this->messageService->sendMessage(
+                    $chatId,
+                    '❌ Карточка проекта не найдена.'
+                );
+            }
+
+            $text = "📤 <b>Экспорт карточки проекта {$projectCode}</b>\n\n";
+            $text .= "Файл успешно сформирован и готов к редактированию.\n\n";
+            $text .= "После редактирования вы можете загрузить его обратно для обновления данных.";
+
+            // Отправляем файл
+            Request::sendDocument([
+                'chat_id' => $chatId,
+                'document' => Request::encodeFile($filePath),
+                'caption' => $text,
+                'parse_mode' => 'HTML'
+            ]);
+
+            // Удаляем временный файл
+            if (file_exists($filePath)) {
+                unlink($filePath);
+            }
+
+            return Request::emptyResponse();
+
+        } catch (\Exception $e) {
+            error_log("ProjectCardHandler::exportProjectCard error: " . $e->getMessage());
+            return $this->messageService->sendMessage(
+                $chatId,
+                '❌ Ошибка при экспорте: ' . $e->getMessage()
+            );
+        }
+    }
+}

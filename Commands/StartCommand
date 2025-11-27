@@ -1,0 +1,112 @@
+<?php
+
+/**
+ * This file is part of the PHP Telegram Bot example-bot package.
+ * https://github.com/php-telegram-bot/example-bot/
+ *
+ * (c) PHP Telegram Bot Team
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+/**
+ * Start command
+ *
+ * Gets executed when a user first starts using the bot.
+ *
+ * When using deep-linking, the parameter can be accessed by getting the command text.
+ *
+ * @see https://core.telegram.org/bots#deep-linking
+ */
+
+namespace Longman\TelegramBot\Commands\SystemCommands;
+
+use Longman\TelegramBot\Commands\SystemCommand;
+use Longman\TelegramBot\Entities\ServerResponse;
+use Longman\TelegramBot\Exception\TelegramException;
+
+class StartCommand extends SystemCommand
+{
+    /**
+     * @var string
+     */
+    protected $name = 'start';
+
+    /**
+     * @var string
+     */
+    protected $description = 'Start command';
+
+    /**
+     * @var string
+     */
+    protected $usage = '/start';
+
+    /**
+     * @var string
+     */
+    protected $version = '1.2.0';
+
+    /**
+     * @var bool
+     */
+    protected $private_only = true;
+
+    /**
+     * Main command execution
+     *
+     * @return ServerResponse
+     * @throws TelegramException
+     */
+    public function execute(): ServerResponse
+    {
+        // Add debugging information
+        error_log("StartCommand executed at " . date('Y-m-d H:i:s'));
+        
+        // Get user information for debugging
+        $message = $this->getMessage();
+        if ($message) {
+            $user = $message->getFrom();
+            if ($user) {
+                $userId = $user->getId();
+                $userFirstName = $user->getFirstName();
+                $userLastName = $user->getLastName();
+                $username = $user->getUsername();
+                
+                error_log("StartCommand executed by user: ID={$userId}, Name={$userFirstName} {$userLastName}, Username={$username}");
+            }
+            
+            // If you use deep-linking, get the parameter like this:
+            $deep_linking_parameter = $message->getText(true);
+            if (!empty($deep_linking_parameter)) {
+                error_log("StartCommand executed with deep linking parameter: " . $deep_linking_parameter);
+            }
+        }
+
+        // Log that we're about to send a response
+        error_log("StartCommand sending welcome message");
+        
+        $response = $this->replyToChat(
+            'Hi there!' . PHP_EOL .
+            'Type /help to see all commands!' . PHP_EOL . PHP_EOL .
+            '<b>Debug Information:</b>' . PHP_EOL .
+            'Execution time: ' . date('Y-m-d H:i:s') . PHP_EOL .
+            'Bot version: ' . $this->version
+        );
+        
+        // Log the response status
+        if ($response && method_exists($response, 'isOk')) {
+            error_log("StartCommand response status: " . ($response->isOk() ? 'SUCCESS' : 'FAILED'));
+            if (!$response->isOk()) {
+                error_log("StartCommand response error: " . $response->getDescription());
+            }
+        } else {
+            error_log("StartCommand response: Unable to determine status");
+        }
+        
+        return $response;
+    }
+}
+
+?>

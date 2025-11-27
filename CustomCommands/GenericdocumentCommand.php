@@ -1,0 +1,155 @@
+<?php
+
+namespace Longman\TelegramBot\Commands\SystemCommands;
+
+use Longman\TelegramBot\Commands\SystemCommand;
+use Longman\TelegramBot\Entities\ServerResponse;
+use Longman\TelegramBot\Request;
+use Longman\TelegramBot\Conversation;
+
+use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\ProjectCardService;
+use Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectCardHandler;
+
+class GenericdocumentCommand extends SystemCommand
+{
+    protected $name = 'genericdocument';
+    protected $description = 'Handle document uploads';
+    protected $version = '1.0.0';
+
+    private MessageService $messageService;
+    private DatabaseService $databaseService;
+    private ProjectCardHandler $projectCardHandler;
+
+    private function initializeServices(): void
+    {
+        if (isset($this->messageService)) {
+            return;
+        }
+
+        $this->databaseService = new DatabaseService();
+        $this->messageService = new MessageService();
+        $this->projectCardHandler = new ProjectCardHandler(
+            $this->messageService,
+            $this->databaseService
+        );
+    }
+
+    public function execute(): ServerResponse
+    {
+        try {
+            $this->initializeServices();
+        } catch (\Exception $e) {
+            error_log("GenericdocumentCommand: Service initialization failed: " . $e->getMessage());
+            return Request::emptyResponse();
+        }
+
+        $message = $this->getMessage();
+        $document = $message->getDocument();
+        $chat = $message->getChat();
+        $user = $message->getFrom();
+
+        $chatId = $chat->getId();
+        $userId = $user->getId();
+
+        if (!$document) {
+            error_log("GenericdocumentCommand: No document found in message");
+            return Request::emptyResponse();
+        }
+
+        $conversation = new Conversation($userId, $chatId, '/callback');
+
+        // Check if user is awaiting project card file upload
+        if (isset($conversation->notes['awaiting_project_card_file']) && 
+            $conversation->notes['awaiting_project_card_file']) {
+            
+            return $this->handleProjectCardUpload($chatId, $userId, $document, $conversation);
+        }
+
+        // Default: ignore unknown documents
+        error_log("GenericdocumentCommand: Document uploaded but no handler state found for user {$userId}");
+        return Request::emptyResponse();
+    }
+
+    /**
+     * Handle project card CSV file upload
+     */
+    private function handleProjectCardUpload(
+        string $chatId,
+        int $userId,
+        $document,
+        Conversation $conversation
+    ): ServerResponse {
+        try {
+            // Check file extension
+            $fileName = $document->getFileName();
+            $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+
+            if (!in_array($fileExtension, ['csv'])) {
+                $text = '❌ <b>Неверный формат файла</b>
+
+Пожалуйста, отправьте CSV-файл (.csv).';
+                
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+
+            // Send processing message
+            $processingText = '⏳ Обрабатываем файл...';
+            $this->messageService->sendMessage($chatId, $processingText);
+
+            // Download file
+            $fileId = $document->getFileId();
+            $file = Request::getFile(['file_id' => $fileId]);
+
+            if (!$file->isOk()) {
+                throw new \Exception('Не удалось загрузить файл с серверов Telegram');
+            }
+
+            $filePath = $file->getResult()->getFilePath();
+            $fileUrl = 'https://api.telegram.org/file/bot' . $this->getTelegram()->getApiKey() . '/' . $filePath;
+
+            // Download to temp directory
+            $uploadsDir = __DIR__ . '/../Uploads/';
+            if (!is_dir($uploadsDir)) {
+                mkdir($uploadsDir, 0777, true);
+            }
+
+            $localFilePath = $uploadsDir . 'temp_' . $userId . '_' . time() . '.csv';
+            
+            if (!file_put_contents($localFilePath, file_get_contents($fileUrl))) {
+                throw new \Exception('Не удалось сохранить файл');
+            }
+
+            // Process the file using ProjectCardHandler
+            $result = $this->projectCardHandler->processUploadedFile(
+                $chatId,
+                $userId,
+                $localFilePath,
+                $conversation
+            );
+
+            // Clean up temp file
+            if (file_exists($localFilePath)) {
+                unlink($localFilePath);
+            }
+
+            return $result;
+
+        } catch (\Exception $e) {
+            error_log("GenericdocumentCommand::handleProjectCardUpload error: " . $e->getMessage());
+
+            // Clean up conversation state
+            unset($conversation->notes['awaiting_project_card_file']);
+            $conversation->update();
+
+            $text = '❌ <b>Ошибка обработки файла</b>
+
+' . $e->getMessage() . '
+
+Попробуйте ещё раз или обратитесь к администратору.';
+
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+    }
+}

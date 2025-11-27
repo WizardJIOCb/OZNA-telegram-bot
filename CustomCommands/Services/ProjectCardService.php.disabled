@@ -1,0 +1,390 @@
+<?php
+
+namespace Longman\TelegramBot\Commands\SystemCommands\Services;
+
+/**
+ * Service for managing project cards
+ */
+class ProjectCardService
+{
+    private DatabaseService $databaseService;
+
+    public function __construct(DatabaseService $databaseService)
+    {
+        $this->databaseService = $databaseService;
+    }
+
+    /**
+     * Generate Excel template for project card upload
+     */
+    public function generateTemplate(): string
+    {
+        // Lazy load ExcelHelper only when needed
+        if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
+            throw new \Exception('Библиотека PhpSpreadsheet не установлена');
+        }
+        
+        require_once __DIR__ . '/ExcelHelper.php';
+        
+        $uploadsDir = __DIR__ . '/../../Uploads/';
+        if (!is_dir($uploadsDir)) {
+            mkdir($uploadsDir, 0777, true);
+        }
+        
+        $filename = $uploadsDir . 'project_card_template_' . date('Y-m-d') . '.xlsx';
+        return ExcelHelper::generateTemplate($filename);
+    }
+
+    /**
+     * Parse uploaded Excel file and create project card
+     */
+    public function importFromExcel(string $filePath, int $userId): array
+    {
+        $result = [
+            'success' => false,
+            'message' => '',
+            'errors' => [],
+            'project_code' => null
+        ];
+
+        if (!class_exists('\\PhpOffice\\PhpSpreadsheet\\IOFactory')) {
+            $result['errors'][] = 'Библиотека PhpSpreadsheet не установлена';
+            $result['message'] = 'Ошибка: ' . implode(', ', $result['errors']);
+            return $result;
+        }
+
+        try {
+            require_once __DIR__ . '/ExcelHelper.php';
+            $data = ExcelHelper::loadExcel($filePath);
+            
+            // Parse main info
+            $row = $data['main'];
+            
+            if (empty($row[0])) {
+                $result['errors'][] = 'Не указан шифр проекта';
+                $result['message'] = 'Ошибка: ' . implode(', ', $result['errors']);
+                return $result;
+            }
+            
+            $projectCode = trim($row[0]);
+            $projectName = trim($row[1] ?? '');
+            $customerName = trim($row[2] ?? '');
+            $businessUnitName = trim($row[3] ?? '');
+            $smrPlannedHours = floatval($row[4] ?? 0);
+            $pnrPlannedHours = floatval($row[5] ?? 0);
+            
+            // Validation
+            if (empty($projectName)) {
+                $result['errors'][] = 'Не указано наименование проекта';
+            }
+            
+            if ($this->projectCardExists($projectCode)) {
+                $result['errors'][] = "Карточка проекта {$projectCode} уже существует";
+                $result['message'] = 'Ошибка: ' . implode(', ', $result['errors']);
+                return $result;
+            }
+            
+            if (!empty($result['errors'])) {
+                $result['message'] = 'Ошибка валидации: ' . implode(', ', $result['errors']);
+                return $result;
+            }
+            
+            $customerId = null;
+            if (!empty($customerName)) {
+                $customerId = $this->getOrCreateCustomer($customerName);
+            }
+            
+            $businessUnitId = null;
+            if (!empty($businessUnitName)) {
+                $businessUnitId = $this->getOrCreateBusinessUnit($businessUnitName);
+            }
+            
+            $cardCreated = $this->createProjectCard(
+                $projectCode,
+                $projectName,
+                $customerId,
+                $businessUnitId,
+                $smrPlannedHours,
+                $pnrPlannedHours,
+                $userId
+            );
+            
+            if (!$cardCreated) {
+                $result['errors'][] = 'Не удалось создать карточку проекта в БД';
+                $result['message'] = 'Ошибка: ' . implode(', ', $result['errors']);
+                return $result;
+            }
+            
+            // Import SMR milestones
+            $smrCount = 0;
+            foreach ($data['smr_milestones'] as $milestone) {
+                if (!empty($milestone[0]) && !empty($milestone[1])) {
+                    $this->createMilestone(
+                        trim($milestone[0]),
+                        'ШМР',
+                        trim($milestone[1]),
+                        floatval($milestone[2] ?? 0),
+                        $smrCount
+                    );
+                    $smrCount++;
+                }
+            }
+            
+            // Import PNR milestones
+            $pnrCount = 0;
+            foreach ($data['pnr_milestones'] as $milestone) {
+                if (!empty($milestone[0]) && !empty($milestone[1])) {
+                    $this->createMilestone(
+                        trim($milestone[0]),
+                        'ПНР',
+                        trim($milestone[1]),
+                        floatval($milestone[2] ?? 0),
+                        $pnrCount
+                    );
+                    $pnrCount++;
+                }
+            }
+            
+            $result['success'] = true;
+            $result['project_code'] = $projectCode;
+            $result['message'] = "✅ Карточка проекта '{$projectCode}' успешно создана!\n\n";
+            $result['message'] .= "📊 Загружено вех:\n";
+            $result['message'] .= "  • ШМР: {$smrCount}\n";
+            $result['message'] .= "  • ПНР: {$pnrCount}";
+            
+        } catch (\Exception $e) {
+            error_log("ProjectCardService::importFromExcel error: " . $e->getMessage());
+            $result['errors'][] = $e->getMessage();
+            $result['message'] = 'Ошибка при обработке файла: ' . $e->getMessage();
+        }
+
+        return $result;
+    }
+
+    /**
+     * Import milestones from sheet
+     */
+    private function importMilestones($sheet, string $projectCode, string $workType): int
+    {
+        $count = 0;
+        $row = 2;
+        
+        while (true) {
+            $data = $sheet->rangeToArray("A{$row}:C{$row}", null, true, false)[0];
+            
+            if (empty($data[0]) || empty($data[1])) {
+                break;
+            }
+            
+            $milestoneProjectCode = trim($data[0]);
+            $milestoneName = trim($data[1]);
+            $plannedHours = floatval($data[2] ?? 0);
+            
+            if ($milestoneProjectCode === $projectCode && !empty($milestoneName) && $plannedHours > 0) {
+                $this->createMilestone($projectCode, $workType, $milestoneName, $plannedHours, $count);
+                $count++;
+            }
+            
+            $row++;
+            if ($row > 100) break; // Защита от зацикливания
+        }
+        
+        return $count;
+    }
+
+    /**
+     * Export project card to Excel
+     */
+    public function exportToExcel(string $projectCode): ?string
+    {
+        // Method disabled - PhpSpreadsheet integration pending
+        return null;
+    }
+
+    /**
+     * Check if project card exists
+     */
+    private function projectCardExists(string $projectCode): bool
+    {
+        $conn = $this->databaseService->getConnection();
+        $stmt = $conn->prepare("SELECT COUNT(*) as count FROM project_cards WHERE project_code = ?");
+        $stmt->bind_param("s", $projectCode);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        return $result['count'] > 0;
+    }
+
+    /**
+     * Get or create customer
+     */
+    private function getOrCreateCustomer(string $name): int
+    {
+        $conn = $this->databaseService->getConnection();
+        
+        // Проверяем существование
+        $stmt = $conn->prepare("SELECT id FROM customers WHERE name = ?");
+        $stmt->bind_param("s", $name);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        
+        if ($result) {
+            return $result['id'];
+        }
+        
+        // Создаём нового
+        $stmt = $conn->prepare("INSERT INTO customers (name) VALUES (?)");
+        $stmt->bind_param("s", $name);
+        $stmt->execute();
+        
+        return $conn->insert_id;
+    }
+
+    /**
+     * Get or create business unit
+     */
+    private function getOrCreateBusinessUnit(string $name): int
+    {
+        $conn = $this->databaseService->getConnection();
+        
+        $stmt = $conn->prepare("SELECT id FROM business_units WHERE name = ?");
+        $stmt->bind_param("s", $name);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        
+        if ($result) {
+            return $result['id'];
+        }
+        
+        $stmt = $conn->prepare("INSERT INTO business_units (name) VALUES (?)");
+        $stmt->bind_param("s", $name);
+        $stmt->execute();
+        
+        return $conn->insert_id;
+    }
+
+    /**
+     * Create project card
+     */
+    private function createProjectCard(
+        string $projectCode,
+        string $projectName,
+        ?int $customerId,
+        ?int $businessUnitId,
+        float $smrPlannedHours,
+        float $pnrPlannedHours,
+        int $userId
+    ): bool {
+        $conn = $this->databaseService->getConnection();
+        
+        $stmt = $conn->prepare(
+            "INSERT INTO project_cards 
+            (project_code, project_name, customer_id, business_unit_id, smr_planned_hours, pnr_planned_hours, created_by) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)"
+        );
+        
+        $stmt->bind_param(
+            "ssiiddi",
+            $projectCode,
+            $projectName,
+            $customerId,
+            $businessUnitId,
+            $smrPlannedHours,
+            $pnrPlannedHours,
+            $userId
+        );
+        
+        return $stmt->execute();
+    }
+
+    /**
+     * Create milestone
+     */
+    private function createMilestone(
+        string $projectCode,
+        string $workType,
+        string $milestoneName,
+        float $plannedHours,
+        int $sortOrder
+    ): bool {
+        $conn = $this->databaseService->getConnection();
+        
+        $stmt = $conn->prepare(
+            "INSERT INTO project_milestones 
+            (project_code, work_type, milestone_name, planned_hours, sort_order) 
+            VALUES (?, ?, ?, ?, ?)"
+        );
+        
+        $stmt->bind_param("sssdi", $projectCode, $workType, $milestoneName, $plannedHours, $sortOrder);
+        
+        return $stmt->execute();
+    }
+
+    /**
+     * Get project card
+     */
+    public function getProjectCard(string $projectCode): ?array
+    {
+        $conn = $this->databaseService->getConnection();
+        
+        $query = "SELECT pc.*, c.name as customer_name, bu.name as business_unit_name 
+                  FROM project_cards pc
+                  LEFT JOIN customers c ON pc.customer_id = c.id
+                  LEFT JOIN business_units bu ON pc.business_unit_id = bu.id
+                  WHERE pc.project_code = ?";
+        
+        $stmt = $conn->prepare($query);
+        $stmt->bind_param("s", $projectCode);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        
+        return $result ?: null;
+    }
+
+    /**
+     * Get milestones for project
+     */
+    public function getMilestones(string $projectCode, string $workType): array
+    {
+        $conn = $this->databaseService->getConnection();
+        
+        $stmt = $conn->prepare(
+            "SELECT * FROM project_milestones 
+             WHERE project_code = ? AND work_type = ? 
+             ORDER BY sort_order ASC"
+        );
+        
+        $stmt->bind_param("ss", $projectCode, $workType);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        $milestones = [];
+        while ($row = $result->fetch_assoc()) {
+            $milestones[] = $row;
+        }
+        
+        return $milestones;
+    }
+
+    /**
+     * Get all project cards
+     */
+    public function getAllProjectCards(): array
+    {
+        $conn = $this->databaseService->getConnection();
+        
+        $query = "SELECT pc.*, c.name as customer_name, bu.name as business_unit_name 
+                  FROM project_cards pc
+                  LEFT JOIN customers c ON pc.customer_id = c.id
+                  LEFT JOIN business_units bu ON pc.business_unit_id = bu.id
+                  ORDER BY pc.project_code ASC";
+        
+        $result = $conn->query($query);
+        
+        $cards = [];
+        while ($row = $result->fetch_assoc()) {
+            $cards[] = $row;
+        }
+        
+        return $cards;
+    }
+}

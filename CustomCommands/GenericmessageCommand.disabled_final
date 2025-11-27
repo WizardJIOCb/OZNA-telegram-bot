@@ -1,0 +1,68 @@
+<?php
+
+/**
+ * Generic message command
+ *
+ * This command handles all text messages that don't match specific commands.
+ * It routes menu selections to the appropriate handlers.
+ */
+
+namespace Longman\TelegramBot\Commands\SystemCommands;
+
+use Longman\TelegramBot\Commands\SystemCommand;
+use Longman\TelegramBot\Entities\ServerResponse;
+use Longman\TelegramBot\Request;
+
+class GenericmessageCommand extends SystemCommand
+{
+    /**
+     * @var string
+     */
+    protected $name = 'genericmessage';
+
+    /**
+     * @var string
+     */
+    protected $description = 'Handle generic text messages';
+
+    /**
+     * @var string
+     */
+    protected $version = '1.0.0';
+
+    /**
+     * Main command execution
+     *
+     * @return ServerResponse
+     */
+    public function execute(): ServerResponse
+    {
+        $message = $this->getMessage();
+        $text = trim($message->getText());
+        $chat_id = $message->getChat()->getId();
+        $user_id = $message->getFrom()->getId();
+
+        // Log the received message for debugging
+        error_log("GenericmessageCommand received text: '{$text}' from user: {$user_id}");
+
+        // Check if this is a menu selection
+        $menu_items = [
+            '📊 Табель', 'Табель',
+            '❓ Помощь', 'Помощь',
+            '👤 Профиль', 'Профиль',
+            '⚙️ Админка', 'Админка'
+        ];
+
+        if (in_array($text, $menu_items)) {
+            // This is a menu selection, route to TextmenuCommand
+            error_log("GenericmessageCommand routing menu selection: '{$text}' to TextmenuCommand");
+            
+            // Create a new TextmenuCommand instance and execute it
+            $textmenu_command = new \Longman\TelegramBot\Commands\UserCommands\TextmenuCommand($this->telegram, $this->update);
+            return $textmenu_command->execute();
+        }
+
+        // For non-menu messages, return empty response
+        return Request::emptyResponse();
+    }
+}

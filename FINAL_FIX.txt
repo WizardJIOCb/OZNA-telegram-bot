@@ -1,0 +1,36 @@
+═══════════════════════════════════════════════════════════════════════════
+КРИТИЧЕСКАЯ ПРОБЛЕМА: MessageService.php НА СЕРВЕРЕ СЛОМАН
+═══════════════════════════════════════════════════════════════════════════
+
+ПРОБЛЕМА:
+Файл MessageService.php содержит дублирующиеся функции, которые вызывают 
+PHP Parse Error на сервере. Все локальные backup-файлы тоже содержат эту ошибку.
+
+СРОЧНОЕ РЕШЕНИЕ:
+Нужно вручную отредактировать файл на СЕРВЕРЕ:
+
+1. Подключитесь к серверу: ssh user@api.ladyzenko.pro
+
+2. Откройте файл:
+   nano /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/MessageService.php
+
+3. Найдите и УДАЛИТЕ следующие строки (дубликаты):
+
+   ЛИНИИ 134-147: Удалить функцию ensureUtf8Encoding (старая версия)
+   ЛИНИИ 149-161: Удалить функцию convertToUtf8
+   ЛИНИИ 163-177: Удалить функцию initializeBotIfNeeded (дубликат)
+   ЛИНИИ 196-257: Удалить функцию sendMessageWithReplyKeyboard (дубликат)
+
+4. Сохраните файл (Ctrl+O, Enter, Ctrl+X)
+
+5. Проверьте синтаксис:
+   php -l /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/MessageService.php
+
+6. Если "No syntax errors detected" - БОТ ЗАРАБОТАЕТ!
+
+АЛЬТЕРНАТИВА:
+Если не можете редактировать вручную, используйте sed:
+
+sed -i '134,177d; 196,257d' /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/MessageService.php
+
+═══════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,42 @@
+<?php
+// DEEP CALLBACK MONITOR - Add to CallbackqueryCommand execute() method
+
+$deepLogFile = __DIR__ . "/../../deep_callback_monitor.log";
+$timestamp = date("Y-m-d H:i:s");
+$userId = $callback_query->getFrom()->getId();
+$data = $callback_query->getData();
+$firstName = $callback_query->getFrom()->getFirstName();
+
+// Log everything about this callback
+$logEntry = "=== CALLBACK RECEIVED AT $timestamp ===\n";
+$logEntry .= "User ID: $userId\n";
+$logEntry .= "User Name: $firstName\n";
+$logEntry .= "Callback Data: '$data'\n";
+$logEntry .= "Callback Length: " . strlen($data) . " bytes\n";
+$logEntry .= "Callback Hex: " . bin2hex($data) . "\n";
+
+// Check which patterns match
+$patterns = [
+    "category_" => strpos($data, "category_") === 0 ? "MATCH" : "NO MATCH",
+    "adm_req_" => strpos($data, "adm_req_") === 0 ? "MATCH" : "NO MATCH", 
+    "acc_lvl_" => strpos($data, "acc_lvl_") === 0 ? "MATCH" : "NO MATCH",
+    "cat_Таб" => strpos($data, "cat_Таб") === 0 ? "MATCH" : "NO MATCH",
+    "proj_ctrl_" => strpos($data, "proj_ctrl_") === 0 ? "MATCH" : "NO MATCH"
+];
+
+$logEntry .= "Pattern Matching:\n";
+foreach ($patterns as $pattern => $result) {
+    $logEntry .= "  $pattern -> $result\n";
+}
+
+$logEntry .= "Will pass through early exit filter: " . 
+    (strpos($data, "category_") === 0 || 
+     strpos($data, "adm_req_") === 0 || 
+     strpos($data, "acc_lvl_") === 0 || 
+     strpos($data, "cat_Таб") === 0 || 
+     strpos($data, "proj_ctrl_") === 0 ? "YES" : "NO") . "\n";
+
+$logEntry .= "===================================\n\n";
+
+file_put_contents($deepLogFile, $logEntry, FILE_APPEND);
+error_log("DEEP CALLBACK: $data from user $userId");

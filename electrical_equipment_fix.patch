@@ -1,0 +1,28 @@
+The issue is in the TabelHandler.php file in the handle() method. The special handling section for electrical equipment callback needs to be more robust.
+
+Current code (lines 130-134):
+```php
+// Special handling for electrical equipment with encoding issues
+if (strpos($callbackData, 'Электрооборудование') !== false || 
+    strpos($callbackData, 'Р­Р»РµРєС‚СЂРѕРѕР±РѕСЂСѓРґРѕРІР°РЅРёРµ') !== false ||
+    strpos($callbackData, 'category_Табель_Электрооборудование') === 0 ||
+    strpos($callbackData, 'category_РўР°Р±РµР»СЊ_Р­Р»РµРєС‚СЂРѕРѕР±РѕСЂСѓРґРѕРІР°РЅРёРµ') === 0) {
+    error_log("TabelHandler: handle - detected electrical equipment callback, showing menu");
+    return $this->handleElectricalEquipmentMenu($chatId);
+}
+```
+
+The fix is to add an exact match condition to make it more robust:
+```php
+// Special handling for electrical equipment with encoding issues
+if (strpos($callbackData, 'Электрооборудование') !== false || 
+    strpos($callbackData, 'Р­Р»РµРєС‚СЂРѕРѕР±РѕСЂСѓРґРѕРІР°РЅРёРµ') !== false ||
+    strpos($callbackData, 'category_Табель_Электрооборудование') === 0 ||
+    strpos($callbackData, 'category_РўР°Р±РµР»СЊ_Р­Р»РµРєС‚СЂРѕРѕР±РѕСЂСѓРґРѕРІР°РЅРёРµ') === 0 ||
+    $callbackData === 'category_Табель_Электрооборудование') {
+    error_log("TabelHandler: handle - detected electrical equipment callback, showing menu");
+    return $this->handleElectricalEquipmentMenu($chatId);
+}
+```
+
+This adds an exact match condition `$callbackData === 'category_Табель_Электрооборудование'` to ensure that the electrical equipment button callback is properly handled.

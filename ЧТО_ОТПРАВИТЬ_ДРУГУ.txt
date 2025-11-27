@@ -1,0 +1,38 @@
+Привет! 👋
+
+Нужна твоя помощь обновить 3 файла на сервере для бота.
+
+📦 ЧТО ОТПРАВИТЬ:
+
+1. Файлы (из папки ozna_bot):
+   - CustomCommands/Handlers/ProjectHandler.php
+   - CustomCommands/GenericmessageCommand.php
+   - CustomCommands/Services/DatabaseService.php
+
+2. Инструкцию:
+   - ИНСТРУКЦИЯ_ДЛЯ_СЕРВЕРА.md
+
+📍 КУДА ЗАГРУЗИТЬ на сервере:
+
+/var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Handlers/ProjectHandler.php
+/var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/GenericmessageCommand.php
+/var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/DatabaseService.php
+
+⚙️ ЧТО СДЕЛАТЬ после загрузки:
+
+sudo systemctl restart php8.3-fpm
+
+(или php-fpm, в зависимости от версии)
+
+✅ КАК ПРОВЕРИТЬ:
+
+Попросить меня зайти в бот и нажать:
+📁 Проекты → 📋 Отчёт по проекту → 📊 Простой отчёт
+
+Должно появиться: "Введите дату начала отчёта в формате ДД.ММ.ГГГГ"
+
+---
+
+Подробная инструкция в файле ИНСТРУКЦИЯ_ДЛЯ_СЕРВЕРА.md
+
+Спасибо! 🙏

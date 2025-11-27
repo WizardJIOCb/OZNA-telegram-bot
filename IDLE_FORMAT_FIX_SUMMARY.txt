@@ -1,0 +1,25 @@
+IDLE REPORT FORMAT FIX - SUMMARY
+
+Problem:
+The idle report format was not displaying nested parentheses correctly.
+Instead of: "Простой (Ожидание допоставки (Изменение ТР))"
+It showed: "Простой (Изменение ТР)"
+
+Root Cause:
+The handleActivityExecution method was using a generic regex pattern that didn't properly preserve the detailed idle reason already stored in conversation notes.
+
+Solution:
+1. Added specific regex pattern for idle confirmation callbacks:
+   - Pattern: /^(category_)?Табель_(Простой|ШМ_Простой)_yes$/
+   
+2. Added specific handling for idle activities to preserve nested reason:
+   - Check for Простой or ШМ_Простой activity types
+   - Use idle_reason from conversation notes which already contains nested format
+   
+3. Verified with comprehensive tests that all patterns work correctly
+
+Expected Result:
+Before fix: ⚠️ ⏸️ Простой (Изменение ТР)
+After fix:  ⚠️ ⏸️ Простой (Ожидание допоставки (Изменение ТР))
+
+The fix ensures that the detailed idle reason with proper nested parentheses formatting is preserved throughout the confirmation flow.

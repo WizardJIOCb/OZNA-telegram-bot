@@ -1,0 +1,791 @@
+<?php
+
+namespace Longman\TelegramBot\Commands\SystemCommands\Services;
+
+/**
+ * Admin service for managing administrative functions
+ */
+class AdminService
+{
+    private MessageService $messageService;
+    private ?DatabaseService $databaseService = null;
+    private bool $databaseAvailable = false;
+    
+    // ID супер-админов (пока захардкодим, потом можно вынести в базу)
+    private array $superAdmins = [
+        230379668,  // Ваш ID (из StartCommand.php)
+        5261465966  // Боря
+        // 1090118386  // Близи (удален из суперадминов)
+        // 444234398   // Олег olegpysh (удален из суперадминов)
+    ];
+
+    // Текущий список проектов (пока статический, потом можно в базу)
+    private array $projects = [
+        'ОИ834', 'ОИ651', 'ОИ696', 'ОИ795',
+        'ОИ810', 'ОИ768', 'ОИ837', 'ОИ562',
+        'ОИ788', 'ОИ860', 'ОИ862',
+        'БКНС115', 'БКНС120'
+    ];
+
+    // Список заявок на доступ
+    private array $accessRequests = [];
+
+    public function __construct(MessageService $messageService)
+    {
+        $this->messageService = $messageService;
+        
+        // Проверяем доступность MySQLi расширения
+        $this->databaseAvailable = extension_loaded('mysqli');
+        
+        // Инициализируем DatabaseService только если расширение доступно
+        if ($this->databaseAvailable) {
+            $this->databaseService = new DatabaseService();
+        }
+        
+        // Загружаем проекты из файла при создании сервиса
+        $this->loadProjectsFromFile();
+        
+        // Загружаем заявки на доступ из файла
+        $this->loadAccessRequestsFromFile();
+    }
+
+    /**
+     * Проверяет является ли пользователь супер-админом
+     */
+    public function isSuperAdmin(int $userId): bool
+    {
+        $isSuperAdmin = in_array($userId, $this->superAdmins);
+        
+        // Debug: Log super admin check
+        error_log("AdminService: User {$userId} is super admin: " . ($isSuperAdmin ? "true" : "false"));
+        error_log("AdminService: Super admin list: " . json_encode($this->superAdmins));
+        
+        return $isSuperAdmin;
+    }
+
+    /**
+     * Получить список супер-админов
+     */
+    public function getSuperAdmins(): array
+    {
+        return $this->superAdmins;
+    }
+
+    /**
+     * Проверяет уровень доступа пользователя
+     */
+    public function getUserAccessLevel(int $userId): int
+    {
+        // Сначала проверяем, является ли пользователь супер-админом
+        if ($this->isSuperAdmin($userId)) {
+            error_log("AdminService: User {$userId} is super admin, returning ACCESS_LEVEL_SUPER_ADMIN");
+            return DatabaseService::ACCESS_LEVEL_SUPER_ADMIN;
+        }
+        
+        // Если база данных недоступна, возвращаем уровень пользователя по умолчанию
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, returning ACCESS_LEVEL_USER for user {$userId}");
+            return DatabaseService::ACCESS_LEVEL_USER;
+        }
+        
+        // Затем получаем уровень доступа из базы данных
+        $dbLevel = $this->databaseService->getUserAccessLevel($userId);
+        error_log("AdminService: User {$userId} database access level: {$dbLevel}");
+        return $dbLevel;
+    }
+
+    /**
+     * Проверяет, имеет ли пользователь определенный уровень доступа или выше
+     */
+    public function hasAccessLevel(int $userId, int $requiredLevel): bool
+    {
+        return $this->getUserAccessLevel($userId) >= $requiredLevel;
+    }
+
+    /**
+     * Получить текстовое описание уровня доступа
+     */
+    public function getAccessLevelName(int $accessLevel): string
+    {
+        switch ($accessLevel) {
+            case DatabaseService::ACCESS_LEVEL_GUEST:
+                return "Гость";
+            case DatabaseService::ACCESS_LEVEL_USER:
+                return "Пользователь";
+            case DatabaseService::ACCESS_LEVEL_SUPERVISOR:
+                return "Супервайзер";
+            case DatabaseService::ACCESS_LEVEL_ADMIN:
+                return "Администратор";
+            case DatabaseService::ACCESS_LEVEL_SUPER_ADMIN:
+                return "Суперадминистратор";
+            default:
+                return "Неизвестный уровень";
+        }
+    }
+
+    /**
+     * Обновляет уровень доступа пользователя
+     */
+    public function updateUserAccessLevel(int $userId, int $newLevel): bool
+    {
+        // Если база данных недоступна, не можем обновить уровень доступа
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, cannot update access level for user {$userId}");
+            return false;
+        }
+        
+        return $this->databaseService->updateUserAccessLevel($userId, $newLevel);
+    }
+
+    /**
+     * Получить ФИО пользователя из профиля
+     */
+    public function getUserFio(int $userId): string
+    {
+        // Если база данных недоступна, не можем получить ФИО
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, cannot get FIO for user {$userId}");
+            return '';
+        }
+        
+        try {
+            $userData = $this->databaseService->getUserData($userId);
+            if (isset($userData['fio']) && !empty($userData['fio'])) {
+                // Ensure UTF-8 encoding
+                return $this->ensureUtf8Encoding($userData['fio']);
+            }
+        } catch (\Exception $e) {
+            // Если не удалось получить ФИО, возвращаем пустую строку
+        }
+        
+        return '';
+    }
+
+    /**
+     * Установить ФИО пользователя
+     */
+    public function setUserFio(int $userId, string $fio): bool
+    {
+        // Если база данных недоступна, не можем установить ФИО
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, cannot set FIO for user {$userId}");
+            return false;
+        }
+        
+        try {
+            return $this->databaseService->setUserFio($userId, $fio);
+        } catch (\Exception $e) {
+            error_log("AdminService: Error setting FIO for user {$userId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Установить функциональное направление пользователя
+     */
+    public function setUserFunctionalDirection(int $userId, string $direction): bool
+    {
+        // Если база данных недоступна, не можем установить функциональное направление
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, cannot set functional direction for user {$userId}");
+            return false;
+        }
+        
+        try {
+            return $this->databaseService->setUserFunctionalDirection($userId, $direction);
+        } catch (\Exception $e) {
+            error_log("AdminService: Error setting functional direction for user {$userId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Добавить пользователя как администратора
+     */
+    public function addAdministrator(int $userId): bool
+    {
+        // Проверяем, что пользователь не является супер-админом (супер-админы всегда имеют максимальный уровень)
+        if ($this->isSuperAdmin($userId)) {
+            error_log("AdminService: Cannot add user {$userId} as admin because they are already a super admin");
+            return false;
+        }
+        
+        // Если база данных недоступна, не можем добавить администратора
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, cannot add administrator {$userId}");
+            return false;
+        }
+        
+        // Обновляем уровень доступа пользователя до администратора
+        return $this->databaseService->updateUserAccessLevel($userId, DatabaseService::ACCESS_LEVEL_ADMIN);
+    }
+
+    /**
+     * Получить всех администраторов (пользователей с уровнем доступа администратора)
+     */
+    public function getAllAdministrators(): array
+    {
+        // В текущей реализации нет прямого способа получить всех администраторов из базы данных
+        // Эта функция будет реализована при необходимости с доработкой базы данных
+        return [];
+    }
+
+    /**
+     * Очистить список администраторов (сбросить уровень доступа всех администраторов до уровня пользователя)
+     */
+    public function clearAdministrators(): bool
+    {
+        // В текущей реализации нет прямого способа очистить список администраторов
+        // потому что нет механизма для получения всех пользователей с определенным уровнем доступа
+        // Эта функция будет реализована при необходимости с доработкой базы данных
+        // Пока возвращаем true как заглушку
+        return true;
+    }
+
+    /**
+     * Получить список всех проектов
+     */
+    public function getAllProjects(): array
+    {
+        return $this->projects;
+    }
+
+    /**
+     * Добавить новый проект
+     */
+    public function addProject(string $projectCode): bool
+    {
+        $projectCode = trim(strtoupper($projectCode));
+        
+        if (empty($projectCode)) {
+            return false;
+        }
+        
+        if (in_array($projectCode, $this->projects)) {
+            return false; // Проект уже существует
+        }
+        
+        $this->projects[] = $projectCode;
+        
+        // TODO: Сохранить в базу данных
+        // Пока сохраняем в файл для простоты
+        $this->saveProjectsToFile();
+        
+        return true;
+    }
+
+    /**
+     * Удалить проект
+     */
+    public function deleteProject(string $projectCode): bool
+    {
+        $key = array_search($projectCode, $this->projects);
+        
+        if ($key === false) {
+            return false; // Проект не найден
+        }
+        
+        unset($this->projects[$key]);
+        $this->projects = array_values($this->projects); // Переиндексация
+        
+        // TODO: Удалить из базы данных
+        $this->saveProjectsToFile();
+        
+        return true;
+    }
+
+    /**
+     * Создать клавиатуру для запроса доступа
+     */
+    public function createAccessRequestKeyboard(): array
+    {
+        return [
+            [
+                ['text' => '📝 Запросить доступ', 'callback_data' => 'category_Админка_ЗапросДоступ']
+            ],
+            [
+                ['text' => '⬅️ Вернуться в главное меню', 'callback_data' => 'category_Главное']
+            ]
+        ];
+    }
+
+    /**
+     * Создать главную клавиатуру админки
+     */
+    public function createAdminMainKeyboard(): array
+    {
+        return [
+            [
+                ['text' => '📋 Управление проектами', 'callback_data' => 'category_Админка_Проекты']
+            ],
+            [
+                ['text' => '👥 Заявки на доступ', 'callback_data' => 'category_Админка_Заявки']
+            ],
+            [
+                ['text' => '⬅️ Вернуться в главное меню', 'callback_data' => 'category_Главное']
+            ]
+        ];
+    }
+
+    /**
+     * Создать клавиатуру управления проектами
+     */
+    public function createProjectManagementKeyboard(): array
+    {
+        return [
+            [
+                ['text' => '📋 Просмотреть все проекты', 'callback_data' => 'category_Админка_Проекты_Список']
+            ],
+            [
+                ['text' => '➕ Добавить проект', 'callback_data' => 'category_Админка_Проекты_Добавить']
+            ],
+            [
+                ['text' => '🗑️ Удалить проект', 'callback_data' => 'category_Админка_Проекты_Удалить']
+            ],
+            [
+                ['text' => '⬅️ Назад в админку', 'callback_data' => 'category_Админка']
+            ]
+        ];
+    }
+
+    /**
+     * Создать клавиатуру для возврата к управлению проектами
+     */
+    public function createBackToProjectsKeyboard(): array
+    {
+        return [
+            [
+                ['text' => '⬅️ Назад к управлению проектами', 'callback_data' => 'category_Админка_Проекты']
+            ]
+        ];
+    }
+
+    /**
+     * Создать клавиатуру для удаления проектов
+     */
+    public function createDeleteProjectKeyboard(array $projects): array
+    {
+        $keyboard = [];
+        
+        // Создаем кнопки по 3 в ряд
+        $row = [];
+        foreach ($projects as $index => $project) {
+            // Используем сокращенный callback_data чтобы не превысить лимит Telegram (64 байта)
+            $callbackData = "category_Адм_УдПр_{$project}";
+            
+            $row[] = ['text' => $project, 'callback_data' => $callbackData];
+            
+            // Каждые 3 кнопки создаем новый ряд
+            if (count($row) == 3 || $index == count($projects) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        // Кнопка назад
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к управлению проектами', 'callback_data' => 'category_Админка_Проекты']
+        ];
+        
+        return $keyboard;
+    }
+
+    /**
+     * Отправить заявку на доступ супер-админам
+     */
+    public function sendAccessRequest(int $userId, string $userName, string $chatId): bool
+    {
+        // Ensure UTF-8 encoding for all text
+        $userName = $this->ensureUtf8Encoding($userName);
+        
+        // Получаем ФИО пользователя из профиля
+        $userFio = $this->getUserFio($userId);
+        
+        // Если ФИО есть, используем его, иначе используем имя пользователя из Telegram
+        $displayName = !empty($userFio) ? $userFio : $userName;
+        
+        // Ensure UTF-8 encoding
+        $displayName = $this->ensureUtf8Encoding($displayName);
+        $userFio = $this->ensureUtf8Encoding($userFio);
+        
+        $message = "🔔 <b>Новая заявка на доступ к админке</b>\n\n";
+        $message .= "👤 Пользователь: {$displayName}\n";
+        if (!empty($userFio) && $userFio !== $userName) {
+            $message .= "Имя в Telegram: {$userName}\n";
+        }
+        $message .= "🆔 User ID: {$userId}\n";
+        $message .= "💬 Chat ID: {$chatId}\n\n";
+        $message .= "Для предоставления доступа добавьте ID {$userId} в список админов.";
+
+        // Отправляем всем супер-админам (не критично для сохранения заявки)
+        foreach ($this->superAdmins as $adminId) {
+            try {
+                $this->messageService->sendMessage($adminId, $message);
+            } catch (\Exception $e) {
+                // Игнорируем ошибки отправки сообщений админам
+            }
+        }
+
+        // Сохраняем заявку
+        $this->accessRequests[] = [
+            'user_id' => $userId,
+            'user_name' => $displayName,
+            'user_telegram_name' => $userName, // Сохраняем имя из Telegram на случай, если ФИО не указано
+            'user_fio' => $userFio, // Сохраняем ФИО отдельно
+            'chat_id' => $chatId,
+            'timestamp' => time()
+        ];
+
+        // Сохраняем заявки в файл
+        $this->saveAccessRequestsToFile();
+
+        return true;
+    }
+
+    /**
+     * Получить список всех заявок на доступ
+     */
+    public function getAllAccessRequests(): array
+    {
+        // Always reload from file to ensure we have the latest data
+        $this->loadAccessRequestsFromFile();
+        return $this->accessRequests;
+    }
+
+    /**
+     * Одобрить заявку на доступ
+     */
+    public function approveAccessRequest(int $userId, string $userName, string $userChatId): bool
+    {
+        // Ensure UTF-8 encoding
+        $userName = $this->ensureUtf8Encoding($userName);
+        $userChatId = $this->ensureUtf8Encoding($userChatId);
+        
+        // Если база данных недоступна, помечаем заявку как одобренную, но не обновляем уровень доступа
+        if (!$this->databaseAvailable || $this->databaseService === null) {
+            error_log("AdminService: Database not available, marking request as approved without updating access level for user {$userId}");
+            
+            // Помечаем заявку как одобренную в списке
+            foreach ($this->accessRequests as $index => $request) {
+                if ((string)$request['user_id'] === (string)$userId) {
+                    $this->accessRequests[$index]['approved'] = true;
+                    break;
+                }
+            }
+            
+            // Сохраняем обновленный список в файл
+            $this->saveAccessRequestsToFile();
+        } else {
+            // Обновляем уровень доступа пользователя до уровня Администратор
+            $this->updateUserAccessLevel($userId, DatabaseService::ACCESS_LEVEL_ADMIN);
+        }
+        
+        // Удаляем заявку из списка
+        $this->removeAccessRequest($userId);
+        
+        // Отправляем уведомление пользователю
+        $message = "✅ <b>Заявка одобрена</b>\n\n";
+        $message .= "Ваша заявка на доступ к админке одобрена.\n";
+        if ($this->databaseAvailable && $this->databaseService !== null) {
+            $message .= "Теперь у вас есть доступ к административным функциям.";
+        } else {
+            $message .= "Обратите внимание: функциональность может быть ограничена из-за временных технических проблем.";
+        }
+        
+        $message = $this->ensureUtf8Encoding($message);
+        
+        $this->messageService->sendMessage($userChatId, $message);
+        
+        return true;
+    }
+
+    /**
+     * Отклонить заявку на доступ
+     */
+    public function rejectAccessRequest(int $userId, string $userName, string $userChatId): bool
+    {
+        // Ensure UTF-8 encoding
+        $userName = $this->ensureUtf8Encoding($userName);
+        $userChatId = $this->ensureUtf8Encoding($userChatId);
+        
+        // Удаляем заявку из списка
+        $this->removeAccessRequest($userId);
+        
+        // Отправляем уведомление пользователю
+        $message = "❌ <b>Заявка отклонена</b>\n\n";
+        $message .= "Ваша заявка на доступ к админке отклонена.\n";
+        $message .= "Если вы считаете, что это ошибка, обратитесь к администратору.";
+        
+        $message = $this->ensureUtf8Encoding($message);
+        
+        $this->messageService->sendMessage($userChatId, $message);
+        
+        return true;
+    }
+
+    /**
+     * Удалить заявку на доступ
+     */
+    private function removeAccessRequest(int $userId): void
+    {
+        // Удаляем заявку из списка
+        $this->accessRequests = array_filter($this->accessRequests, function($request) use ($userId) {
+            // Ensure both values are the same type for comparison
+            return (string)$request['user_id'] !== (string)$userId;
+        });
+        
+        // Переиндексируем массив
+        $this->accessRequests = array_values($this->accessRequests);
+        
+        // Сохраняем обновленный список в файл
+        $this->saveAccessRequestsToFile();
+    }
+
+    /**
+     * Очистить все заявки на доступ
+     */
+    public function clearAllAccessRequests(): void
+    {
+        // Очищаем массив заявок
+        $this->accessRequests = [];
+        
+        // Сохраняем пустой массив в файл
+        $this->saveAccessRequestsToFile();
+    }
+
+    /**
+     * Перезагрузить заявки на доступ из файла
+     */
+    public function reloadAccessRequests(): void
+    {
+        $this->loadAccessRequestsFromFile();
+    }
+
+    /**
+     * Проверить существует ли проект
+     */
+    public function projectExists(string $projectCode): bool
+    {
+        // Ensure UTF-8 encoding
+        $projectCode = $this->ensureUtf8Encoding($projectCode);
+        return in_array(strtoupper(trim($projectCode)), $this->projects);
+    }
+
+    /**
+     * Временное сохранение проектов в файл
+     * TODO: Заменить на работу с базой данных
+     */
+    private function saveProjectsToFile(): void
+    {
+        $filePath = __DIR__ . '/../../data/projects.json';
+        
+        // Создаем директорию если не существует
+        $dir = dirname($filePath);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        
+        // Ensure UTF-8 encoding for JSON data
+        $jsonData = json_encode($this->projects, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $jsonData = $this->ensureUtf8Encoding($jsonData);
+        
+        file_put_contents($filePath, $jsonData);
+    }
+
+    /**
+     * Загрузить проекты из файла
+     * TODO: Заменить на работу с базой данных
+     */
+    private function loadProjectsFromFile(): void
+    {
+        $filePath = __DIR__ . '/../../data/projects.json';
+        
+        if (file_exists($filePath)) {
+            $data = file_get_contents($filePath);
+            // Fix encoding issues
+            $data = $this->ensureUtf8Encoding($data);
+            $projects = json_decode($data, true);
+            
+            if (is_array($projects)) {
+                $this->projects = $projects;
+            }
+        }
+    }
+
+    /**
+     * Временное сохранение заявок на доступ в файл
+     */
+    private function saveAccessRequestsToFile(): void
+    {
+        $filePath = __DIR__ . '/../../data/access_requests.json';
+        
+        // Создаем директорию если не существует
+        $dir = dirname($filePath);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        
+        // Кодируем данные в JSON с правильной кодировкой
+        $jsonData = json_encode($this->accessRequests, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        
+        // Debug: Log what we're about to write
+        error_log("AdminService saveAccessRequestsToFile jsonData: " . $jsonData);
+        error_log("AdminService saveAccessRequestsToFile jsonData length: " . strlen($jsonData));
+        error_log("AdminService saveAccessRequestsToFile jsonData hex: " . bin2hex($jsonData));
+        
+        // Убеждаемся, что данные в правильной кодировке UTF-8
+        $jsonData = $this->ensureUtf8Encoding($jsonData);
+        
+        // Сохраняем данные в файл в UTF-8 без BOM
+        // Add BOM removal to ensure clean file
+        $jsonData = $this->removeBOM($jsonData);
+        
+        // Debug: Log what we're actually writing
+        error_log("AdminService saveAccessRequestsToFile writing to file: " . $jsonData);
+        error_log("AdminService saveAccessRequestsToFile writing length: " . strlen($jsonData));
+        error_log("AdminService saveAccessRequestsToFile writing hex: " . bin2hex($jsonData));
+        
+        // Ensure the file contains valid JSON even if empty
+        file_put_contents($filePath, $jsonData);
+    }
+    
+    /**
+     * Загрузить заявоки на доступ из файла
+     */
+    private function loadAccessRequestsFromFile(): void
+    {
+        error_log("AdminService loadAccessRequestsFromFile START");
+        
+        $filePath = __DIR__ . '/../../data/access_requests.json';
+        
+        error_log("AdminService loadAccessRequestsFromFile file path: {$filePath}");
+        error_log("AdminService loadAccessRequestsFromFile file exists: " . (file_exists($filePath) ? 'yes' : 'no'));
+        
+        if (file_exists($filePath)) {
+            $data = file_get_contents($filePath);
+            error_log("AdminService loadAccessRequestsFromFile raw data length: " . strlen($data));
+            
+            // Remove BOM if present
+            $data = $this->removeBOM($data);
+            error_log("AdminService loadAccessRequestsFromFile after BOM removal length: " . strlen($data));
+            
+            // Fix encoding issues - try multiple approaches
+            $originalData = $data;
+            
+            // First try auto detection
+            $data = $this->ensureUtf8Encoding($data);
+            error_log("AdminService loadAccessRequestsFromFile after auto conversion length: " . strlen($data));
+            
+            // Check if JSON is valid
+            $testDecode = json_decode($data, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                error_log("AdminService loadAccessRequestsFromFile JSON error after auto conversion: " . json_last_error_msg());
+                
+                // Try UTF-8 to UTF-8 conversion
+                $data = $this->ensureUtf8Encoding($originalData);
+                error_log("AdminService loadAccessRequestsFromFile after UTF-8 conversion length: " . strlen($data));
+                
+                $testDecode = json_decode($data, true);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    error_log("AdminService loadAccessRequestsFromFile JSON error after UTF-8 conversion: " . json_last_error_msg());
+                    
+                    // Try Windows-1251 conversion
+                    $data = $this->ensureUtf8Encoding($originalData);
+                    error_log("AdminService loadAccessRequestsFromFile after Windows-1251 conversion length: " . strlen($data));
+                }
+            }
+            
+            // Check encoding
+            $isUtf8 = $this->isUtf8($data);
+            error_log("AdminService loadAccessRequestsFromFile is UTF-8: " . ($isUtf8 ? 'yes' : 'no'));
+            
+            $requests = json_decode($data, true);
+            
+            error_log("AdminService loadAccessRequestsFromFile json decode result: " . (json_last_error() === JSON_ERROR_NONE ? 'success' : 'failed'));
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                error_log("AdminService loadAccessRequestsFromFile json error: " . json_last_error_msg());
+            }
+            
+            if (is_array($requests)) {
+                // Ensure all text fields in requests are UTF-8 encoded
+                foreach ($requests as $index => $request) {
+                    foreach ($request as $key => $value) {
+                        if (is_string($value)) {
+                            $requests[$index][$key] = $this->ensureUtf8Encoding($value);
+                        }
+                    }
+                    error_log("AdminService loadAccessRequestsFromFile request #{$index}: " . json_encode($requests[$index], JSON_UNESCAPED_UNICODE));
+                }
+                
+                $this->accessRequests = $requests;
+                error_log("AdminService loadAccessRequestsFromFile loaded " . count($requests) . " requests");
+            } else {
+                error_log("AdminService loadAccessRequestsFromFile invalid data format, initializing empty array");
+                $this->accessRequests = [];
+            }
+        } else {
+            error_log("AdminService loadAccessRequestsFromFile file not found, initializing empty array");
+            $this->accessRequests = [];
+        }
+        
+        error_log("AdminService loadAccessRequestsFromFile END");
+    }
+    
+    /**
+     * Remove BOM from string if present
+     */
+    public function removeBOM(string $data): string
+    {
+        // Check for UTF-8 BOM and remove if present
+        if (substr($data, 0, 3) === "\xEF\xBB\xBF") {
+            return substr($data, 3);
+        }
+        // Check for UTF-16 LE BOM and remove if present
+        if (substr($data, 0, 2) === "\xFF\xFE") {
+            return substr($data, 2);
+        }
+        // Check for UTF-16 BE BOM and remove if present
+        if (substr($data, 0, 2) === "\xFE\xFF") {
+            return substr($data, 2);
+        }
+        return $data;
+    }
+    
+    /**
+     * Ensure UTF-8 encoding for text
+     */
+    private function ensureUtf8Encoding($text)
+    {
+        // If text is already valid UTF-8, return as is
+        if ($this->isUtf8($text)) {
+            return $text;
+        }
+        
+        // If mbstring is available, use it for encoding conversion
+        if (function_exists('mb_convert_encoding')) {
+            // Detect the current encoding
+            $encoding = mb_detect_encoding($text, ['UTF-8', 'UTF-16', 'UTF-16LE', 'UTF-16BE', 'Windows-1251'], true);
+            if ($encoding && $encoding !== 'UTF-8') {
+                return mb_convert_encoding($text, 'UTF-8', $encoding);
+            }
+            return $text;
+        }
+        
+        // If mbstring is not available, return as is
+        return $text;
+    }
+    
+    /**
+     * Check if text is UTF-8 encoded
+     */
+    private function isUtf8($text)
+    {
+        // If mbstring is available, use it for encoding detection
+        if (function_exists('mb_check_encoding')) {
+            return mb_check_encoding($text, 'UTF-8');
+        }
+        
+        // Fallback implementation for UTF-8 validation
+        return (bool) preg_match('//u', $text);
+    }
+}

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Исправление: Счетчик заявок на доступ</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .date {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+        .status {
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .success {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .before, .after {
+            padding: 20px;
+            border-radius: 8px;
+            border: 2px solid #ddd;
+        }
+        .before {
+            background-color: #fff3cd;
+            border-color: #ffc107;
+        }
+        .after {
+            background-color: #d4edda;
+            border-color: #28a745;
+        }
+        .before h3 {
+            color: #856404;
+            margin-top: 0;
+        }
+        .after h3 {
+            color: #155724;
+            margin-top: 0;
+        }
+        .button-demo {
+            background-color: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            border: 2px solid #dee2e6;
+        }
+        .highlight {
+            background-color: #ffeb3b;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        .info-box {
+            background-color: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .code-block {
+            background-color: #282c34;
+            color: #abb2bf;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            margin: 15px 0;
+        }
+        .example {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        .example-title {
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        ul {
+            line-height: 1.8;
+        }
+        .emoji {
+            font-size: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✅ Исправление: Счетчик заявок на доступ</h1>
+        <div class="date">19 октября 2025</div>
+        
+        <div class="status success">
+            🎉 Проблема успешно решена!
+        </div>
+
+        <h2>📋 Описание проблемы</h2>
+        <p>Вы заметили, что в админ-панели кнопка <strong>"Заявки на доступ"</strong> не отображала количество заявок, хотя их было 4 штуки. Это затрудняло понимание того, есть ли новые заявки на рассмотрение.</p>
+
+        <h2>🔄 Сравнение: До и После</h2>
+        <div class="comparison">
+            <div class="before">
+                <h3>❌ До исправления</h3>
+                <div class="button-demo">
+                    📋 Управление проектами<br>
+                    👥 Заявки на доступ<br>
+                    🔔 Проекты на согласование (3)
+                </div>
+                <p style="color: #856404; font-size: 14px;">
+                    ⚠️ Не видно, сколько заявок ожидает рассмотрения!
+                </p>
+            </div>
+            
+            <div class="after">
+                <h3>✅ После исправления</h3>
+                <div class="button-demo">
+                    📋 Управление проектами<br>
+                    👥 Заявки на доступ <span class="highlight">(4)</span><br>
+                    🔔 Проекты на согласование (3)
+                </div>
+                <p style="color: #155724; font-size: 14px;">
+                    ✨ Теперь количество заявок видно сразу!
+                </p>
+            </div>
+        </div>
+
+        <h2>📊 Примеры отображения</h2>
+        <div class="example">
+            <div class="example-title">Различные варианты:</div>
+            <ul>
+                <li><span class="emoji">👥</span> Заявки на доступ <em>(когда нет заявок)</em></li>
+                <li><span class="emoji">👥</span> Заявки на доступ (1) <em>(одна заявка)</em></li>
+                <li><span class="emoji">👥</span> Заявки на доступ (4) <em>(четыре заявки)</em></li>
+                <li><span class="emoji">👥</span> Заявки на доступ (15) <em>(много заявок)</em></li>
+            </ul>
+        </div>
+
+        <h2>🔧 Технические детали</h2>
+        <div class="info-box">
+            <strong>Измененный файл:</strong> <code>CustomCommands/Handlers/AdminHandler.php</code><br>
+            <strong>Метод:</strong> <code>showAdminMainMenu()</code><br>
+            <strong>Строки:</strong> ~265-295
+        </div>
+
+        <div class="code-block">
+// Добавляем кнопку заявок на доступ с счетчиком
+try {
+    $databaseService = $this->adminService->getDatabaseService();
+    $accessRequestsCount = count($databaseService->getPendingAccessRequests());
+    
+    $accessButtonText = '👥 Заявки на доступ';
+    if ($accessRequestsCount > 0) {
+        $accessButtonText .= " ({$accessRequestsCount})";
+    }
+    
+    $keyboard[] = [
+        ['text' => $accessButtonText, 'callback_data' => 'category_Админка_Заявки']
+    ];
+} catch (\Exception $e) {
+    // Fallback без счетчика если ошибка
+    $keyboard[] = [
+        ['text' => '👥 Заявки на доступ', 'callback_data' => 'category_Админка_Заявки']
+    ];
+}
+        </div>
+
+        <h2>✨ Преимущества</h2>
+        <ul>
+            <li>✅ <strong>Видимость:</strong> Сразу видно количество ожидающих заявок</li>
+            <li>✅ <strong>Удобство:</strong> Не нужно открывать раздел, чтобы проверить наличие заявок</li>
+            <li>✅ <strong>Консистентность:</strong> Тот же подход, что и для "Проекты на согласование"</li>
+            <li>✅ <strong>Надежность:</strong> В случае ошибки кнопка всё равно отображается</li>
+        </ul>
+
+        <h2>🧪 Тестирование</h2>
+        <p>Для проверки работы счетчика созданы тестовые скрипты:</p>
+        <div class="code-block">
+# Проверить работу счетчика
+php test_access_requests_counter.php
+
+# Проверить содержимое таблицы заявок
+php check_access_requests_table.php
+        </div>
+
+        <h2>📝 Как проверить в боте</h2>
+        <ol>
+            <li>Откройте Telegram бот</li>
+            <li>Перейдите в главное меню → <strong>⚙️ Админка</strong></li>
+            <li>Посмотрите на кнопку <strong>"👥 Заявки на доступ"</strong></li>
+            <li>Если есть pending заявки, вы увидите их количество в скобках</li>
+        </ol>
+
+        <div class="info-box">
+            <strong>Примечание:</strong> Счетчик показывает только заявки со статусом "pending". Уже обработанные заявки (approved/rejected) не учитываются.
+        </div>
+
+        <h2>📚 Дополнительная документация</h2>
+        <ul>
+            <li><code>ACCESS_REQUESTS_COUNTER_FIX.md</code> - подробное описание исправления</li>
+            <li><code>QUICK_GUIDE_ACCESS_COUNTER.md</code> - краткая инструкция</li>
+        </ul>
+
+        <div class="status success" style="margin-top: 40px;">
+            🎯 Исправление готово и протестировано!
+        </div>
+    </div>
+</body>
+</html>

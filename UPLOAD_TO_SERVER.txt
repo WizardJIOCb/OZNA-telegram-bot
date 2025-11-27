@@ -1,0 +1,25 @@
+╔════════════════════════════════════════════════════════════╗
+║  СРОЧНО: ЗАГРУЗИТЬ НА СЕРВЕР                               ║
+╚════════════════════════════════════════════════════════════╝
+
+ПРОБЛЕМА:
+MessageService.php на СЕРВЕРЕ содержит дубликаты функций
+
+РЕШЕНИЕ:
+Нужно загрузить исправленный файл на сервер
+
+ФАЙЛ ДЛЯ ЗАГРУЗКИ:
+Используйте ЭТОТ backup (он БЫЛ исправлен auto_fix):
+C:\ozna_bot\CustomCommands\Services\MessageService.php.backup_auto_2025-10-31_154956
+
+КУДА ЗАГРУЖАТЬ:
+Сервер: api.ladyzenko.pro
+Путь: /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/MessageService.php
+
+КАК ЗАГРУЗИТЬ:
+1. Используйте FileZilla, WinSCP или SCP
+2. Или используйте команду:
+   scp "C:\ozna_bot\CustomCommands\Services\MessageService.php.backup_auto_2025-10-31_154956" user@api.ladyzenko.pro:/var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/MessageService.php
+
+ПРОВЕРКА:
+После загрузки файла бот заработает автоматически!

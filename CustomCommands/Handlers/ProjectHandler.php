@@ -1,0 +1,5774 @@
+<?php
+
+namespace Longman\TelegramBot\Commands\SystemCommands\Handlers;
+
+// Explicitly include the interface to ensure it's available
+require_once __DIR__ . '/../Services/CallbackHandlerInterface.php';
+require_once __DIR__ . '/../Services/ManualInputStateManager.php';
+
+use Longman\TelegramBot\Commands\SystemCommands\Services\CallbackHandlerInterface;
+use Longman\TelegramBot\Commands\SystemCommands\Services\AdminService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\ManualInputStateManager;
+use Longman\TelegramBot\Commands\SystemCommands\Services\ExportSecurityService;
+use Longman\TelegramBot\Entities\CallbackQuery;
+use Longman\TelegramBot\Entities\ServerResponse;
+use Longman\TelegramBot\Conversation;
+
+/**
+ * Handler for project management related callback queries
+ * Handles all project-related functionality including personal project lists
+ */
+class ProjectHandler implements CallbackHandlerInterface
+{
+    private AdminService $adminService;
+    private MessageService $messageService;
+    private DatabaseService $databaseService;
+    private ManualInputStateManager $stateManager;
+    private ExportSecurityService $exportSecurityService;
+
+    public function __construct(AdminService $adminService, MessageService $messageService)
+    {
+        error_log("ProjectHandler constructor called");
+        $this->adminService = $adminService;
+        $this->messageService = $messageService;
+        $this->databaseService = new DatabaseService();
+        $this->stateManager = new ManualInputStateManager();
+        $this->exportSecurityService = new ExportSecurityService($this->databaseService);
+    }
+
+    public function canHandle(string $callbackData): bool
+    {
+        error_log("ProjectHandler: canHandle called with callbackData: '{$callbackData}'");
+        
+        // EXCLUDE proj_mod_* callbacks - they should be handled by ProjectModerationHandler
+        if (str_starts_with($callbackData, 'proj_mod_')) {
+            error_log("ProjectHandler: rejecting proj_mod_ callback - should go to ProjectModerationHandler");
+            return false;
+        }
+        
+        // Handle all project-related callbacks
+        $startsWithCategoryProjects = str_starts_with($callbackData, 'category_Проекты');
+        
+        // Handle project list management callbacks
+        $startsWithProjectList = str_starts_with($callbackData, 'proj_list_');
+        $startsWithProjectControl = str_starts_with($callbackData, 'proj_ctrl_');
+        $startsWithProjectReport = str_starts_with($callbackData, 'proj_report_');
+        $startsWithProjectNotes = str_starts_with($callbackData, 'proj_notes_');
+        $startsWithProjectCard = str_starts_with($callbackData, 'proj_card_');
+        $isExportKeyHistory = $callbackData === 'export_key_history' || str_starts_with($callbackData, 'export_history_page_');
+        $isRetryExport = $callbackData === 'retry_export';
+        $isCancelExport = $callbackData === 'category_Проекты' && isset($conversation->notes['awaiting_export_key_verify']) && $conversation->notes['awaiting_export_key_verify'];
+        
+        $canHandle = $startsWithCategoryProjects || $startsWithProjectList || $startsWithProjectControl || $startsWithProjectReport || $startsWithProjectNotes || $startsWithProjectCard || $isExportKeyHistory || $isRetryExport || $isCancelExport;
+        
+        error_log("ProjectHandler: canHandle result for '{$callbackData}': " . ($canHandle ? 'true' : 'false'));
+        error_log("ProjectHandler: startsWithCategoryProjects: " . ($startsWithCategoryProjects ? 'true' : 'false'));
+        error_log("ProjectHandler: startsWithProjectList: " . ($startsWithProjectList ? 'true' : 'false'));
+        error_log("ProjectHandler: startsWithProjectControl: " . ($startsWithProjectControl ? 'true' : 'false'));
+        error_log("ProjectHandler: startsWithProjectReport: " . ($startsWithProjectReport ? 'true' : 'false'));
+        error_log("ProjectHandler: startsWithProjectNotes: " . ($startsWithProjectNotes ? 'true' : 'false'));
+        
+        return $canHandle;
+    }
+
+    public function handle(CallbackQuery $callbackQuery, string $category, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        $callbackData = $callbackQuery->getData();
+        
+        error_log("ProjectHandler: handle called with category: '{$category}' for user: {$userId}");
+        
+        // Check user access level
+        $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
+        
+        // Basic access check - all registered users (level 1+) can access projects
+        if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_USER) {
+            $text = '⚠️ <b>Доступ ограничен</b>
+
+У вас уровень доступа "Гость". Обратитесь к администратору для получения доступа к проектам.';
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+
+        // Handle different project-related callbacks
+        if ($category === 'Проекты') {
+            // Check if we're cancelling export key verification
+            if (isset($conversation->notes['awaiting_export_key_verify']) && $conversation->notes['awaiting_export_key_verify']) {
+                // Clear export key verification state
+                $conversation->notes['awaiting_export_key_verify'] = false;
+                unset($conversation->notes['export_resume_callback']);
+                unset($conversation->notes['export_pending_type']);
+                $conversation->update();
+                
+                error_log("ProjectHandler: Cancelled export key verification for user {$userId}");
+            }
+            
+            return $this->showProjectsMainMenu($chatId, $userId);
+        }
+        
+        // Main project activities
+        if ($category === 'Проекты_МоиПроекты') {
+            return $this->showMyProjectsMenu($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_МояАктивность') {
+            return $this->showMyActivityMenu($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_КарточкаПроекта') {
+            return $this->showProjectCardsMenu($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_ОтчётПоПроекту') {
+            // Check access level for project reports (supervisor+)
+            if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
+                $text = '⚠️ <b>Доступ ограничен</b>
+
+Функция "Отчёт по проекту" доступна только для Супервайзеров, Администраторов и Суперадминистраторов.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            return $this->showProjectReportMenu($chatId, $userId);
+        }
+        
+        // My Projects submenu
+        if ($category === 'Проекты_ПроектыДляОтчёта') {
+            return $this->showReportProjectsMenu($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_ПроектыНаКонтроле') {
+            // Check access level for control projects (supervisor+)
+            if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
+                $text = '⚠️ <b>Доступ ограничен</b>
+
+Функция "Проекты на контроле" доступна только для Супервайзеров, Администраторов и Суперадминистраторов.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            return $this->showControlProjectsMenu($chatId, $userId);
+        }
+        
+        // Handle project list management callbacks (without category_ prefix)
+        if (str_starts_with($callbackData, 'proj_list_')) {
+            return $this->handleReportProjectsCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle project report callbacks
+        if (str_starts_with($callbackData, 'proj_report_')) {
+            return $this->handleProjectReportCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle project notes export callbacks
+        if (str_starts_with($callbackData, 'proj_notes_')) {
+            return $this->handleProjectReportCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle project card callbacks
+        if (str_starts_with($callbackData, 'proj_card_')) {
+            if ($callbackData === 'proj_card_list') {
+                return $this->showProjectCardsList($chatId, $userId);
+            }
+            if ($callbackData === 'proj_card_add') {
+                return $this->addNewProject($chatId, $userId, $conversation);
+            }
+            if ($callbackData === 'proj_card_cancel') {
+                return $this->cancelProjectCreation($chatId, $userId, $conversation);
+            }
+            if (str_starts_with($callbackData, 'proj_card_view_')) {
+                $projectCode = str_replace('proj_card_view_', '', $callbackData);
+                return $this->viewProjectCard($chatId, $userId, $projectCode);
+            }
+            if (str_starts_with($callbackData, 'proj_card_delete_confirm_')) {
+                $projectCode = str_replace('proj_card_delete_confirm_', '', $callbackData);
+                return $this->confirmDeleteProject($chatId, $userId, $projectCode);
+            }
+            if (str_starts_with($callbackData, 'proj_card_delete_yes_')) {
+                $projectCode = str_replace('proj_card_delete_yes_', '', $callbackData);
+                return $this->deleteProject($chatId, $userId, $projectCode);
+            }
+            if (str_starts_with($callbackData, 'proj_card_delete_no_')) {
+                $projectCode = str_replace('proj_card_delete_no_', '', $callbackData);
+                return $this->viewProjectCard($chatId, $userId, $projectCode);
+            }
+        }
+        
+        // Handle My Activity submenu callbacks
+        if ($category === 'Проекты_ПоследниеЗаписи') {
+            return $this->showLastEntries($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_ДетальнаяСтатистика') {
+            return $this->showDetailedStatistics($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_МоиДостижения') {
+            return $this->showAchievements($chatId, $userId);
+        }
+        
+        if ($category === 'Проекты_ЭкспортАктивности') {
+            return $this->exportUserActivity($chatId, $userId);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_ctrl_')) {
+            // Check access level for control projects callbacks
+            if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
+                $text = '⚠️ <b>Доступ ограничен</b>
+
+У вас нет доступа к управлению проектами на контроле.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            return $this->handleControlProjectsCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle export history callback
+        if ($callbackData === 'export_key_history' || str_starts_with($callbackData, 'export_history_page_')) {
+            // Extract page number
+            $page = 1;
+            if (str_starts_with($callbackData, 'export_history_page_')) {
+                $page = (int)str_replace('export_history_page_', '', $callbackData);
+            }
+            
+            // Create ExportKeyHandler to show history
+            $exportSecurityService = new \Longman\TelegramBot\Commands\SystemCommands\Services\ExportSecurityService($this->databaseService);
+            $exportKeyHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ExportKeyHandler(
+                $this->messageService,
+                $this->databaseService,
+                $exportSecurityService
+            );
+            return $exportKeyHandler->showExportHistory($chatId, $userId, $page);
+        }
+        
+        // Handle retry export (wrong export key)
+        if ($callbackData === 'retry_export') {
+            // Just re-prompt for export key
+            $conversation->notes['awaiting_export_key_verify'] = true;
+            $conversation->update();
+            
+            $text = "🔐 <b>Введите кодовое слово</b>\n\nДля безопасности введите ваше кодовое слово:";
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+        
+        // Default case
+        $text = 'Неизвестная команда управления проектами';
+        return $this->messageService->sendMessage($chatId, $text);
+    }
+
+    public function getPriority(): int
+    {
+        return 30;
+    }
+
+    /**
+     * Show main projects menu
+     */
+    private function showProjectsMainMenu(string $chatId, int $userId): ServerResponse
+    {
+        // Get user access level
+        $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
+        
+        $keyboard = [
+            [
+                ['text' => '📂 Мои проекты', 'callback_data' => 'category_Проекты_МоиПроекты']
+            ],
+            [
+                ['text' => '📊 Моя активность', 'callback_data' => 'category_Проекты_МояАктивность']
+            ]
+        ];
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Вернуться в главное меню', 'callback_data' => 'category_Главное']
+        ];
+        
+        $text = '📁 <b>Проекты</b>
+
+Выберите действие:';
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show "My Projects" submenu
+     */
+    private function showMyProjectsMenu(string $chatId, int $userId): ServerResponse
+    {
+        $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
+        
+        $keyboard = [
+            [
+                ['text' => '🆕 Добавить проект', 'callback_data' => 'proj_mod_add_new']
+            ],
+            [
+                ['text' => '📋 Проекты для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+            ]
+        ];
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+        ];
+        
+        $text = '📂 <b>Мои проекты</b>
+
+Выберите действие:';
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show "My Activity" dashboard with statistics and achievements foundation
+     */
+    private function showMyActivityMenu(string $chatId, int $userId): ServerResponse
+    {
+        // Simple version to ensure it works - we'll add complex stats later
+        try {
+            // Get basic user data
+            $userData = $this->databaseService->getUserData($userId);
+            $userName = $userData['fio'] ?? 'Пользователь';
+            
+            // Get simple entry count
+            $entries = $this->databaseService->getUserLastTabelEntries($userId, 100);
+            $totalEntries = count($entries);
+            
+            // Count recent entries (simple way)
+            $recentEntries = 0;
+            $milestones = 0;
+            
+            $thirtyDaysAgo = strtotime('-30 days');
+            foreach ($entries as $entry) {
+                $entryTime = strtotime($entry['dt']);
+                if ($entryTime >= $thirtyDaysAgo) {
+                    $recentEntries++;
+                }
+                
+                // Simple milestone detection
+                if (stripos($entry['message'], 'веха') !== false || 
+                    stripos($entry['message'], 'этап') !== false || 
+                    stripos($entry['message'], 'завершен') !== false) {
+                    $milestones++;
+                }
+            }
+            
+            // Create simple, engaging text
+            $text = "📊 <b>Моя активность</b>\n\n";
+            
+            $text .= "👋 Привет, <b>{$userName}!</b>\n\n";
+            
+            $text .= "📈 <b>Ваша статистика:</b>\n";
+            $text .= "• 📝 Всего записей в табель: <b>{$totalEntries}</b>\n";
+            $text .= "• 🕒 За последние 30 дней: <b>{$recentEntries}</b>\n";
+            
+            if ($milestones > 0) {
+                $text .= "• 🎯 Подтверждено вех: <b>{$milestones}</b>\n";
+            }
+            
+            $text .= "\n🏆 <b>Система достижений:</b>\n";
+            
+            // Simple achievement system
+            if ($totalEntries >= 50) {
+                $text .= "• 🥇 Мастер табеля! (50+ записей)\n";
+            } elseif ($totalEntries >= 20) {
+                $text .= "• 🥈 Опытный сотрудник (20+ записей)\n";
+            } elseif ($totalEntries >= 10) {
+                $text .= "• 🥉 Активный пользователь (10+ записей)\n";
+            } else {
+                $text .= "• 🌟 Начинающий (менее 10 записей)\n";
+            }
+            
+            if ($milestones >= 5) {
+                $text .= "• 🎆 Покоритель вех! (5+ вех)\n";
+            } elseif ($milestones >= 1) {
+                $text .= "• ⭐ Первые вехи достигнуты!\n";
+            }
+            
+            $text .= "\n🚀 <b>Скоро будет доступно:</b>\n";
+            $text .= "• 🏅 Эмодзи-значки рядом с именем\n";
+            $text .= "• 🏆 Соревнования между сотрудниками\n";
+            $text .= "• 📊 Детальная аналитика и графики\n";
+            $text .= "• 🎁 Награды за достижения";
+            
+            // Create simple keyboard
+            $keyboard = [
+                [
+                    ['text' => '📋 Последние записи', 'callback_data' => 'category_Проекты_ПоследниеЗаписи']
+                ],
+                [
+                    ['text' => '🏆 Мои достижения', 'callback_data' => 'category_Проекты_МоиДостижения']
+                ],
+                [
+                    ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            // Fallback in case of any error
+            error_log("Error in showMyActivityMenu: " . $e->getMessage());
+            
+            $text = "📊 <b>Моя активность</b>\n\n";
+            $text .= "🎉 <b>Добро пожаловать в новый раздел!</b>\n\n";
+            $text .= "Здесь будет отображаться:\n";
+            $text .= "• 📈 Ваша статистика активности\n";
+            $text .= "• 🏆 Достижения и успехи\n";
+            $text .= "• 📊 Анализ продуктивности\n";
+            $text .= "• 🎯 Система рангов и наград\n\n";
+            $text .= "⚙️ <i>Система загружается...</i>";
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+    }
+
+    /**
+     * Show development placeholder for modules under development
+     */
+    private function showDevelopmentPlaceholder(string $chatId, string $moduleName): ServerResponse
+    {
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'pm_menu']
+            ]
+        ];
+        
+        $icons = [
+            'Моя активность' => '📊',
+            'Карточка проекта' => '🗂️',
+            'Отчёт по проекту' => '📋'
+        ];
+        
+        $icon = $icons[$moduleName] ?? '📄';
+        
+        $text = "{$icon} <b>{$moduleName}</b>
+
+🚧 Данный модуль находится в разработке.";
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Get user activity statistics for the activity dashboard
+     */
+    private function getUserActivityStatistics(int $userId): array
+    {
+        // Get user's timesheet entries
+        $allEntries = $this->databaseService->getUserLastTabelEntries($userId, 1000); // Get many entries for analysis
+        
+        // Initialize statistics
+        $stats = [
+            'total_entries' => count($allEntries),
+            'last_30_days' => 0,
+            'this_week' => 0,
+            'milestones' => 0,
+            'unique_projects' => 0,
+            'streak_days' => 0,
+            'most_active_project' => null,
+            'favorite_activity' => null
+        ];
+        
+        if (empty($allEntries)) {
+            return $stats;
+        }
+        
+        // Calculate time-based statistics
+        $now = time();
+        $thirtyDaysAgo = $now - (30 * 24 * 60 * 60);
+        $weekStart = strtotime('last Monday', $now);
+        
+        $projects = [];
+        $activities = [];
+        $dailyActivity = [];
+        
+        foreach ($allEntries as $entry) {
+            $entryTime = strtotime($entry['dt']);
+            $entryDate = date('Y-m-d', $entryTime);
+            
+            // Count entries in last 30 days
+            if ($entryTime >= $thirtyDaysAgo) {
+                $stats['last_30_days']++;
+            }
+            
+            // Count entries this week
+            if ($entryTime >= $weekStart) {
+                $stats['this_week']++;
+            }
+            
+            // Track daily activity for streak calculation
+            $dailyActivity[$entryDate] = true;
+            
+            // Extract project and activity info from message
+            $message = $entry['message'];
+            
+            // Count milestones (entries containing 'веха' or 'этап')
+            if (stripos($message, 'вех') !== false || stripos($message, 'этап') !== false) {
+                $stats['milestones']++;
+            }
+            
+            // Extract project codes (assuming format like ОИ834, БКНС115)
+            if (preg_match('/(ОИ\d+|БКНС\d+)/u', $message, $matches)) {
+                $projectCode = $matches[1];
+                if (!isset($projects[$projectCode])) {
+                    $projects[$projectCode] = 0;
+                }
+                $projects[$projectCode]++;
+            }
+            
+            // Extract activity types (simple pattern matching)
+            if (preg_match('/о (.*?) добавлена/u', $message, $matches)) {
+                $activityName = trim($matches[1]);
+                if (!isset($activities[$activityName])) {
+                    $activities[$activityName] = 0;
+                }
+                $activities[$activityName]++;
+            }
+        }
+        
+        // Calculate unique projects
+        $stats['unique_projects'] = count($projects);
+        
+        // Find most active project
+        if (!empty($projects)) {
+            arsort($projects);
+            $topProject = array_keys($projects)[0];
+            $stats['most_active_project'] = [
+                'code' => $topProject,
+                'count' => $projects[$topProject]
+            ];
+        }
+        
+        // Find favorite activity
+        if (!empty($activities)) {
+            arsort($activities);
+            $topActivity = array_keys($activities)[0];
+            $stats['favorite_activity'] = [
+                'name' => $topActivity,
+                'count' => $activities[$topActivity]
+            ];
+        }
+        
+        // Calculate activity streak
+        $stats['streak_days'] = $this->calculateActivityStreak($dailyActivity);
+        
+        return $stats;
+    }
+    
+    /**
+     * Calculate consecutive days with activity
+     */
+    private function calculateActivityStreak(array $dailyActivity): int
+    {
+        if (empty($dailyActivity)) {
+            return 0;
+        }
+        
+        $streak = 0;
+        $currentDate = date('Y-m-d');
+        
+        // Count backwards from today
+        for ($i = 0; $i < 365; $i++) { // Max 1 year lookback
+            $checkDate = date('Y-m-d', strtotime("-{$i} days"));
+            
+            if (isset($dailyActivity[$checkDate])) {
+                $streak++;
+            } else {
+                break; // Streak broken
+            }
+        }
+        
+        return $streak;
+    }
+    
+    /**
+     * Get emoji for milestone achievements
+     */
+    private function getMilestoneAchievementEmoji(int $milestones): string
+    {
+        if ($milestones >= 50) return '🏆'; // Trophy
+        if ($milestones >= 25) return '🥇'; // Gold medal
+        if ($milestones >= 10) return '🥈'; // Silver medal  
+        if ($milestones >= 5) return '🥉';  // Bronze medal
+        if ($milestones >= 1) return '⭐';      // Star
+        return '🎁'; // Gift (for first milestone)
+    }
+    
+    /**
+     * Get emoji for project diversity
+     */
+    private function getProjectDiversityEmoji(int $projects): string
+    {
+        if ($projects >= 10) return '🌍'; // World
+        if ($projects >= 5) return '🏢';  // Building  
+        if ($projects >= 3) return '📁';  // Folder
+        if ($projects >= 2) return '💼';  // Briefcase
+        return '📄'; // Document
+    }
+    
+    /**
+     * Get emoji for activity streak
+     */
+    private function getStreakEmoji(int $days): string
+    {
+        if ($days >= 30) return '🔥'; // Fire
+        if ($days >= 14) return '⚡';      // Lightning
+        if ($days >= 7) return '🎢';  // Dart
+        if ($days >= 3) return '🚀';  // Rocket
+        return '🌟'; // Glowing star
+    }
+    
+    /**
+     * Show user's last entries with complete information
+     */
+    private function showLastEntries(string $chatId, int $userId): ServerResponse
+    {
+        $entries = $this->databaseService->getUserLastTabelEntries($userId, 15);
+        
+        $text = "📅 <b>Последние записи в табеле</b>\n\n";
+        
+        if (empty($entries)) {
+            $text .= "📭 У вас пока нет записей в табеле.";
+        } else {
+            $text .= "📋 <b>Последние " . count($entries) . " записей:</b>\n\n";
+            
+            foreach ($entries as $index => $entry) {
+                $date = date('d.m.Y', strtotime($entry['dt']));
+                $time = date('H:i', strtotime($entry['dt']));
+                
+                // Get the complete message without truncation
+                $message = $entry['message'];
+                
+                // Remove HTML tags for cleaner display but keep the content
+                $cleanMessage = strip_tags($message);
+                
+                // Format entry with complete information
+                $entryNumber = $index + 1;
+                $text .= "<b>{$entryNumber}.</b> 🕐 <b>{$date} в {$time}</b>\n";
+                $text .= "📝 {$cleanMessage}\n\n";
+            }
+            
+            // Add helpful verification information
+            $text .= "✅ <b>Как проверить правильность записи:</b>\n";
+            $text .= "• 📅 Дата и время соответствуют фактической активности\n";
+            $text .= "• 🏷️ Название проекта указано корректно\n";
+            $text .= "• ⚙️ Вид выполненной активности соответствует реальности\n";
+            $text .= "• ✅ Статус 'добавлена' означает успешное сохранение";
+        }
+        
+        $keyboard = [
+            [
+                ['text' => '🔄 Обновить список', 'callback_data' => 'category_Проекты_ПоследниеЗаписи']
+            ],
+            [
+                ['text' => '⬅️ Назад к активности', 'callback_data' => 'category_Проекты_МояАктивность']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show detailed statistics
+     */
+    private function showDetailedStatistics(string $chatId, int $userId): ServerResponse
+    {
+        $stats = $this->getUserActivityStatistics($userId);
+        
+        $text = "📈 <b>Детальная статистика</b>
+
+";
+        
+        // Time period analysis
+        $text .= "📅 <b>Анализ по периодам:</b>
+";
+        $text .= "• Всего записей: <b>{$stats['total_entries']}</b>
+";
+        $text .= "• За 30 дней: <b>{$stats['last_30_days']}</b>
+";
+        $text .= "• За неделю: <b>{$stats['this_week']}</b>
+";
+        
+        // Activity metrics
+        if ($stats['total_entries'] > 0) {
+            $dailyAvg = round($stats['last_30_days'] / 30, 1);
+            $text .= "• Среднее в день: <b>{$dailyAvg}</b>
+";
+        }
+        
+        $text .= "\n🏆 <b>Достижения:</b>
+";
+        $text .= "• Подтверждено вех: <b>{$stats['milestones']}</b>
+";
+        $text .= "• Проектов в работе: <b>{$stats['unique_projects']}</b>
+";
+        $text .= "• Дней подряд с активностью: <b>{$stats['streak_days']}</b>
+";
+        
+        // Performance indicators  
+        $text .= "\n📊 <b>Показатели эффективности:</b>
+";
+        
+        // Calculate efficiency rating
+        $efficiency = 0;
+        if ($stats['total_entries'] > 50) $efficiency += 2;
+        elseif ($stats['total_entries'] > 20) $efficiency += 1;
+        
+        if ($stats['milestones'] > 10) $efficiency += 2;
+        elseif ($stats['milestones'] > 3) $efficiency += 1;
+        
+        if ($stats['streak_days'] > 7) $efficiency += 2;
+        elseif ($stats['streak_days'] > 3) $efficiency += 1;
+        
+        $efficiencyText = match($efficiency) {
+            0, 1 => '🌱 Новичок',
+            2, 3 => '🚀 Развивающийся',
+            4, 5 => '⭐ Опытный',
+            default => '🏆 Мастер'
+        };
+        
+        $text .= "• Уровень: {$efficiencyText} ({$efficiency}/6)
+";
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к активности', 'callback_data' => 'category_Проекты_МояАктивность']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show achievements preview
+     */
+    private function showAchievements(string $chatId, int $userId): ServerResponse
+    {
+        $stats = $this->getUserActivityStatistics($userId);
+        
+        $text = "🏆 <b>Мои достижения</b>
+
+";
+        
+        // Current achievements
+        $text .= "✨ <b>Полученные достижения:</b>
+";
+        
+        $achievements = [];
+        
+        // Entry count achievements
+        if ($stats['total_entries'] >= 100) {
+            $achievements[] = '🏆 Мастер табеля (100+ записей)';
+        } elseif ($stats['total_entries'] >= 50) {
+            $achievements[] = '🥇 Опытный сотрудник (50+ записей)';
+        } elseif ($stats['total_entries'] >= 10) {
+            $achievements[] = '🥈 Первые шаги (10+ записей)';
+        }
+        
+        // Milestone achievements
+        if ($stats['milestones'] >= 20) {
+            $achievements[] = '🎆 Легенда вех (20+ вех)';
+        } elseif ($stats['milestones'] >= 10) {
+            $achievements[] = '🎉 Достижитель вех! (10+ вех)';
+        } elseif ($stats['milestones'] >= 5) {
+            $achievements[] = '⭐ Покоритель вех (5+ вех)';
+        } elseif ($stats['milestones'] >= 1) {
+            $achievements[] = '🎁 Первая веха!';
+        }
+        
+        // Project diversity achievements
+        if ($stats['unique_projects'] >= 10) {
+            $achievements[] = '🌍 Мастер многозадачности (10+ проектов)';
+        } elseif ($stats['unique_projects'] >= 5) {
+            $achievements[] = '🏢 Многопрофильный (5+ проектов)';
+        } elseif ($stats['unique_projects'] >= 3) {
+            $achievements[] = '📁 Параллельные проекты (3+ проекта)';
+        }
+        
+        // Streak achievements
+        if ($stats['streak_days'] >= 30) {
+            $achievements[] = '🔥 Неугасимое пламя (30+ дней)';
+        } elseif ($stats['streak_days'] >= 14) {
+            $achievements[] = '⚡ Молниеносная активность (14+ дней)';
+        } elseif ($stats['streak_days'] >= 7) {
+            $achievements[] = '🚀 Недельная активность';
+        }
+        
+        if (empty($achievements)) {
+            $text .= "🌱 Пока никаких достижений... Но вы только начинаете!
+";
+        } else {
+            foreach ($achievements as $achievement) {
+                $text .= "{$achievement}
+";
+            }
+        }
+        
+        $text .= "\n🎨 <b>Будущие возможности:</b>
+";
+        $text .= "• Система рангов с видимыми значками
+";
+        $text .= "• Соревнования и лидерборды
+";
+        $text .= "• Специальные достижения за командную работу
+";
+        $text .= "• Подарки и поощрения";
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к активности', 'callback_data' => 'category_Проекты_МояАктивность']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Export user activity to text format
+     */
+    private function exportUserActivity(string $chatId, int $userId): ServerResponse
+    {
+        // Get all user entries
+        $entries = $this->databaseService->getAllUserTabelEntries($userId);
+        
+        if (empty($entries)) {
+            $text = "💭 У вас пока нет записей для экспорта.";
+        } else {
+            // Create export content
+            $exportText = "ОТЧЁТ ПО АКТИВНОСТИ ПОЛЬЗОВАТЕЛЯ
+";
+            $exportText .= "Генерация отчёта: " . date('d.m.Y H:i') . "\n";
+            $exportText .= "Всего записей: " . count($entries) . "\n\n";
+            
+            foreach ($entries as $entry) {
+                $date = date('d.m.Y H:i', strtotime($entry['dt']));
+                $message = strip_tags($entry['message']);
+                $exportText .= "{$date}: {$message}\n";
+            }
+            
+            // Send as a file (simplified version - just send as message for now)
+            $text = "📋 <b>Экспорт активности</b>
+
+";
+            $text .= "Ваш отчёт готов! Содержит <b>" . count($entries) . "</b> записей.
+
+";
+            $text .= "Первые 5 записей:
+";
+            
+            $previewEntries = array_slice($entries, 0, 5);
+            foreach ($previewEntries as $entry) {
+                $date = date('d.m.Y', strtotime($entry['dt']));
+                $message = strip_tags($entry['message']);
+                if (strlen($message) > 80) {
+                    $message = substr($message, 0, 80) . '...';
+                }
+                $text .= "• {$date}: {$message}
+";
+            }
+            
+            if (count($entries) > 5) {
+                $text .= "\n... и ещё " . (count($entries) - 5) . " записей";
+            }
+        }
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к активности', 'callback_data' => 'category_Проекты_МояАктивность']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show report projects management menu
+     */
+    private function showReportProjectsMenu(string $chatId, int $userId): ServerResponse
+    {
+        // Get user's personal report projects list
+        $personalProjects = $this->getUserReportProjects($userId);
+        
+        // Debug logging
+        error_log("ProjectHandler: showReportProjectsMenu for user {$userId}");
+        error_log("ProjectHandler: user has " . count($personalProjects) . " report projects");
+        error_log("ProjectHandler: user projects: " . json_encode($personalProjects));
+        
+        $text = '📋 <b>Проекты для отчёта</b>
+
+Здесь вы можете составить личный список проектов, который будет отображаться при формировании отчётов.
+
+';
+        
+        if (empty($personalProjects)) {
+            $text .= 'У вас пока нет проектов в личном списке.
+
+';
+            error_log("ProjectHandler: No personal projects found for user {$userId}");
+        } else {
+            $text .= 'Ваши проекты для отчёта:
+';
+            foreach ($personalProjects as $project) {
+                $text .= "• {$project}
+";
+                error_log("ProjectHandler: Added project to display: {$project}");
+            }
+            $text .= '
+';
+        }
+        
+        // Get all available projects from admin system
+        $allProjects = $this->adminService->getAllProjects();
+        
+        $keyboard = [];
+        
+        if (!empty($allProjects)) {
+            $keyboard[] = [
+                ['text' => '➕ Добавить проект', 'callback_data' => 'proj_list_add']
+            ];
+        }
+        
+        if (!empty($personalProjects)) {
+            $keyboard[] = [
+                ['text' => '➖ Удалить проект', 'callback_data' => 'proj_list_remove']
+            ];
+        }
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к моим проектам', 'callback_data' => 'category_Проекты_МоиПроекты']
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show control projects management menu - FULL IMPLEMENTATION
+     */
+    private function showControlProjectsMenu(string $chatId, int $userId): ServerResponse
+    {
+        // UNIQUE DEBUG MARKER - 2025-09-17-FIXED
+        error_log("ProjectHandler: FIXED VERSION 2025-09-17 showControlProjectsMenu called for user {$userId}");
+        
+        // Get user's control projects list with error handling
+        try {
+            $controlProjects = $this->getUserControlProjects($userId);
+            error_log("ProjectHandler: Successfully got control projects via method call");
+        } catch (\Error $e) {
+            error_log("ProjectHandler: Error getting control projects: " . $e->getMessage());
+            // Fallback: get control projects directly
+            $userData = $this->databaseService->getUserData($userId);
+            $controlProjects = $userData['control_projects'] ?? [];
+            error_log("ProjectHandler: Using fallback method to get control projects");
+        }
+        
+        // Debug logging
+        error_log("ProjectHandler: showControlProjectsMenu for user {$userId}");
+        error_log("ProjectHandler: user has " . count($controlProjects) . " projects on control");
+        
+        $text = '🔍 <b>Проекты на контроле</b>
+
+Здесь вы можете настроить личный список проектов, копии отчётов по которым будут автоматически направлены в определённые группы и чаты Telegram.
+
+';
+        
+        if (empty($controlProjects)) {
+            $text .= 'У вас пока нет проектов на контроле.
+
+';
+        } else {
+            $text .= 'Ваши проекты на контроле:
+';
+            foreach ($controlProjects as $projectCode => $settings) {
+                $text .= "• <b>{$projectCode}</b>";
+                if (isset($settings['group_id']) && !empty($settings['group_id'])) {
+                    $text .= " → Группа: {$settings['group_id']}";
+                }
+                if (isset($settings['chat_id']) && !empty($settings['chat_id'])) {
+                    $text .= " → Чат: {$settings['chat_id']}";
+                }
+                $text .= "\n";
+            }
+            $text .= "\n";
+        }
+        
+        // Get all available projects from admin system
+        $allProjects = $this->adminService->getAllProjects();
+        
+        $keyboard = [];
+        
+        // Короткие названия кнопок для лучшей совместимости
+        if (!empty($allProjects)) {
+            $keyboard[] = [
+                ['text' => '➕ Добавить проект', 'callback_data' => 'proj_ctrl_add']
+            ];
+            error_log("ProjectHandler: added 'Add project' button");
+        }
+        
+        if (!empty($controlProjects)) {
+            $keyboard[] = [
+                ['text' => '➖ Удалить проект', 'callback_data' => 'proj_ctrl_remove']
+            ];
+            $keyboard[] = [
+                ['text' => '⚙️ Настройки', 'callback_data' => 'proj_ctrl_settings']
+            ];
+            error_log("ProjectHandler: added 'Remove' and 'Settings' buttons");
+        } else {
+            error_log("ProjectHandler: no control projects, skipping Remove/Settings buttons");
+        }
+        
+        $keyboard[] = [
+            ['text' => '📋 Список проектов', 'callback_data' => 'proj_ctrl_list']
+        ];
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => 'pm_menu']
+        ];
+        
+        error_log("ProjectHandler: keyboard has " . count($keyboard) . " rows");
+        foreach ($keyboard as $rowIndex => $row) {
+            foreach ($row as $button) {
+                error_log("ProjectHandler: button '{$button['text']}' -> '{$button['callback_data']}'");
+            }
+        }
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle report projects callbacks (add/remove)
+     */
+    private function handleReportProjectsCallback(CallbackQuery $callbackQuery, string $callbackData, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        
+        if ($callbackData === 'proj_list_add') {
+            return $this->showAddReportProjectMenu($chatId, $userId);
+        }
+        
+        if ($callbackData === 'proj_list_remove') {
+            return $this->showRemoveReportProjectMenu($chatId, $userId);
+        }
+        
+        // Handle specific add/remove actions
+        if (str_starts_with($callbackData, 'proj_list_add_')) {
+            $projectCode = str_replace('proj_list_add_', '', $callbackData);
+            return $this->addProjectToReportList($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_list_remove_')) {
+            $projectCode = str_replace('proj_list_remove_', '', $callbackData);
+            return $this->removeProjectFromReportList($chatId, $userId, $projectCode);
+        }
+        
+        $text = 'Неизвестная команда управления списком проектов для отчёта';
+        return $this->messageService->sendMessage($chatId, $text);
+    }
+
+    /**
+     * Handle control projects callbacks - FULL IMPLEMENTATION
+     */
+    private function handleControlProjectsCallback(CallbackQuery $callbackQuery, string $callbackData, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        
+        if ($callbackData === 'proj_ctrl_add') {
+            return $this->showAddControlProjectMenu($chatId, $userId);
+        }
+        
+        if ($callbackData === 'proj_ctrl_remove') {
+            return $this->showRemoveControlProjectMenu($chatId, $userId);
+        }
+        
+        if ($callbackData === 'proj_ctrl_list') {
+            return $this->showControlProjectsList($chatId, $userId);
+        }
+        
+        if ($callbackData === 'proj_ctrl_settings') {
+            return $this->showControlProjectSettings($chatId, $userId);
+        }
+        
+        // Handle settings for specific projects
+        if (str_starts_with($callbackData, 'proj_ctrl_set_')) {
+            $projectCode = str_replace('proj_ctrl_set_', '', $callbackData);
+            return $this->showProjectControlSettings($chatId, $userId, $projectCode);
+        }
+        
+        // Handle specific add/remove actions
+        if (str_starts_with($callbackData, 'proj_ctrl_add_')) {
+            $projectCode = str_replace('proj_ctrl_add_', '', $callbackData);
+            return $this->addProjectToControlList($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_ctrl_remove_')) {
+            $projectCode = str_replace('proj_ctrl_remove_', '', $callbackData);
+            return $this->removeProjectFromControlList($chatId, $userId, $projectCode);
+        }
+        
+        // Handle new configuration callbacks
+        if (str_starts_with($callbackData, 'proj_ctrl_cfg_')) {
+            return $this->handleConfigurationCallbacks($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle test notifications
+        if (str_starts_with($callbackData, 'proj_ctrl_test_')) {
+            $projectCode = str_replace('proj_ctrl_test_', '', $callbackData);
+            return $this->sendTestNotification($chatId, $userId, $projectCode);
+        }
+        
+        // Handle group selection callbacks
+        if (str_starts_with($callbackData, 'proj_ctrl_group_select_')) {
+            $remaining = str_replace('proj_ctrl_group_select_', '', $callbackData);
+            $parts = explode('_', $remaining, 2); // Split into max 2 parts
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $groupId = $parts[1];
+                return $this->setProjectGroup($chatId, $userId, $projectCode, $groupId);
+            }
+        }
+        
+        // Handle chat selection callbacks  
+        if (str_starts_with($callbackData, 'proj_ctrl_chat_select_')) {
+            $remaining = str_replace('proj_ctrl_chat_select_', '', $callbackData);
+            $parts = explode('_', $remaining, 2); // Split into max 2 parts
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $chatType = $parts[1];
+                return $this->setProjectChat($chatId, $userId, $projectCode, $chatType);
+            }
+        }
+        
+        // Handle notification type toggle
+        if (str_starts_with($callbackData, 'proj_ctrl_toggle_type_')) {
+            $remaining = str_replace('proj_ctrl_toggle_type_', '', $callbackData);
+            $parts = explode('_', $remaining, 2); // Split into max 2 parts
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $notificationType = $parts[1];
+                return $this->toggleNotificationType($chatId, $userId, $projectCode, $notificationType);
+            }
+        }
+        
+        // Handle notification mode selection
+        if (str_starts_with($callbackData, 'proj_ctrl_mode_select_')) {
+            $remaining = str_replace('proj_ctrl_mode_select_', '', $callbackData);
+            $parts = explode('_', $remaining, 2); // Split into max 2 parts
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $mode = $parts[1];
+                return $this->setNotificationMode($chatId, $userId, $projectCode, $mode);
+            }
+        }
+        
+        // Handle manual group ID input
+        if (str_starts_with($callbackData, 'proj_ctrl_group_manual_')) {
+            $projectCode = str_replace('proj_ctrl_group_manual_', '', $callbackData);
+            return $this->showManualGroupInput($chatId, $userId, $projectCode);
+        }
+        
+        // Handle manual chat ID input
+        if (str_starts_with($callbackData, 'proj_ctrl_chat_manual_')) {
+            $projectCode = str_replace('proj_ctrl_chat_manual_', '', $callbackData);
+            return $this->showManualChatInput($chatId, $userId, $projectCode);
+        }
+
+        $text = 'Неизвестная команда управления проектами на контроле';
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к проектам на контроле', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show menu to add project to report list
+     */
+    private function showAddReportProjectMenu(string $chatId, int $userId): ServerResponse
+    {
+        // Create a FRESH DatabaseService to avoid stale cached data
+        $freshDatabaseService = new DatabaseService();
+        
+        // Use ProjectSelector with fresh database connection
+        $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector(
+            $freshDatabaseService
+        );
+        $allProjects = $projectSelector->getAllProjectsIncludingPending();
+        $userProjects = $this->getUserReportProjects($userId);
+        
+        // Normalize arrays before diff to avoid encoding issues with Cyrillic text
+        $allProjects = array_values(array_map('trim', $allProjects));
+        $userProjects = array_values(array_map('trim', $userProjects));
+        
+        // Filter out projects already in user's list
+        $availableProjects = array_diff($allProjects, $userProjects);
+        // Re-index array after diff
+        $availableProjects = array_values($availableProjects);
+        
+        // CRITICAL: Apply intelligent sorting after filtering
+        // This ensures projects remain sorted even after array_diff operation
+        $availableProjects = $freshDatabaseService->sortProjectsIntelligently($availableProjects);
+        
+        if (empty($availableProjects)) {
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+                ]
+            ];
+            
+            $text = '📋 <b>Добавить проект для отчёта</b>
+
+Все доступные проекты уже добавлены в ваш список.';
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        $keyboard = [];
+        
+        // Create buttons for available projects (3 per row)
+        $row = [];
+        foreach ($availableProjects as $index => $project) {
+            $row[] = ['text' => $project, 'callback_data' => "proj_list_add_{$project}"];
+            
+            if (count($row) == 3 || $index == count($availableProjects) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+        ];
+        
+        $text = '📋 <b>Добавить проект для отчёта</b>
+
+Выберите проект для добавления в ваш личный список:';
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show menu to remove project from report list
+     */
+    private function showRemoveReportProjectMenu(string $chatId, int $userId): ServerResponse
+    {
+        $userProjects = $this->getUserReportProjects($userId);
+        
+        if (empty($userProjects)) {
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+                ]
+            ];
+            
+            $text = '📋 <b>Удалить проект из отчёта</b>
+
+У вас нет проектов в личном списке для удаления.';
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Apply intelligent sorting to user's projects
+        $userProjects = $this->databaseService->sortProjectsIntelligently($userProjects);
+        
+        $keyboard = [];
+        
+        // Create buttons for user's projects (3 per row)
+        $row = [];
+        foreach ($userProjects as $index => $project) {
+            $row[] = ['text' => $project, 'callback_data' => "proj_list_remove_{$project}"];
+            
+            if (count($row) == 3 || $index == count($userProjects) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+        ];
+        
+        $text = '📋 <b>Удалить проект из отчёта</b>
+
+Выберите проект для удаления из вашего личного списка:';
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Get user's personal report projects list
+     */
+    private function getUserReportProjects(int $userId): array
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $reportProjects = $userData['report_projects'] ?? [];
+        
+        // Debug logging
+        error_log("ProjectHandler: getUserReportProjects for user {$userId}");
+        error_log("ProjectHandler: raw user data: " . json_encode($userData));
+        error_log("ProjectHandler: extracted report_projects: " . json_encode($reportProjects));
+        
+        return $reportProjects;
+    }
+
+    /**
+     * Add project to user's report list
+     */
+    private function addProjectToReportList(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $reportProjects = $userData['report_projects'] ?? [];
+        
+        if (!in_array($projectCode, $reportProjects)) {
+            $reportProjects[] = $projectCode;
+            $userData['report_projects'] = $reportProjects;
+            $this->databaseService->updateUserData($userId, $userData);
+            
+            $text = "✅ <b>Проект добавлен</b>
+
+Проект <b>{$projectCode}</b> успешно добавлен в ваш список проектов для отчёта.";
+        } else {
+            $text = "ℹ️ <b>Проект уже в списке</b>
+
+Проект <b>{$projectCode}</b> уже находится в вашем списке проектов для отчёта.";
+        }
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Remove project from user's report list
+     */
+    private function removeProjectFromReportList(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $reportProjects = $userData['report_projects'] ?? [];
+        
+        $key = array_search($projectCode, $reportProjects);
+        if ($key !== false) {
+            array_splice($reportProjects, $key, 1);
+            $userData['report_projects'] = $reportProjects;
+            $this->databaseService->updateUserData($userId, $userData);
+            
+            $text = "✅ <b>Проект удалён</b>
+
+Проект <b>{$projectCode}</b> успешно удалён из вашего списка проектов для отчёта.";
+        } else {
+            $text = "ℹ️ <b>Проект не найден</b>
+
+Проект <b>{$projectCode}</b> не найден в вашем списке проектов для отчёта.";
+        }
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle project report callbacks
+     */
+    private function handleProjectReportCallback(CallbackQuery $callbackQuery, string $callbackData, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        
+        // Handle simple report
+        if ($callbackData === 'proj_report_simple') {
+            // Check export permission first
+            $conversation->notes['export_resume_callback'] = 'proj_report_simple_after_key';
+            $conversation->update();
+            
+            $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'report');
+            if ($permissionCheck !== null) {
+                return $permissionCheck;
+            }
+            return $this->showSimpleReportStartDateMenu($chatId, $userId, $conversation);
+        }
+        
+        // Resume simple report after export key verification
+        if ($callbackData === 'proj_report_simple_after_key') {
+            return $this->showSimpleReportStartDateMenu($chatId, $userId, $conversation);
+        }
+        
+        // Handle by-project report
+        if ($callbackData === 'proj_report_byproject') {
+            // Check export permission first
+            $conversation->notes['export_resume_callback'] = 'proj_report_byproject_after_key';
+            $conversation->update();
+            
+            $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'report');
+            if ($permissionCheck !== null) {
+                return $permissionCheck;
+            }
+            return $this->showByProjectReportMenu($chatId, $userId);
+        }
+        
+        // Resume by-project report after export key verification
+        if ($callbackData === 'proj_report_byproject_after_key') {
+            return $this->showByProjectReportMenu($chatId, $userId);
+        }
+        
+        // Handle notes export
+        if ($callbackData === 'proj_report_notes') {
+            // Check export permission first
+            $conversation->notes['export_resume_callback'] = 'proj_report_notes_after_key';
+            $conversation->update();
+            
+            $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
+            if ($permissionCheck !== null) {
+                return $permissionCheck;
+            }
+            return $this->showNotesExportTypeMenu($chatId, $userId);
+        }
+        
+        // Resume notes export after export key verification
+        if ($callbackData === 'proj_report_notes_after_key') {
+            return $this->showNotesExportTypeMenu($chatId, $userId);
+        }
+        
+        // Handle notes export type selection
+        if ($callbackData === 'proj_notes_type_all') {
+            return $this->showNotesExportStatusFilterMenu($chatId, $userId, null, $conversation);
+        }
+        
+        if ($callbackData === 'proj_notes_type_byproject') {
+            return $this->showNotesExportProjectMenu($chatId, $userId);
+        }
+        
+        // Handle filter type selection
+        if ($callbackData === 'proj_report_filter_by_fn') {
+            $startDate = $conversation->notes['simple_report_start_date'] ?? '';
+            $endDate = $conversation->notes['simple_report_end_date'] ?? '';
+            return $this->showSimpleReportFnMenu($chatId, $userId, $conversation, $startDate, $endDate);
+        }
+        
+        // Handle quick filters menu
+        if ($callbackData === 'proj_report_filter_quick') {
+            return $this->showSimpleReportQuickFilterMenu($chatId, $userId, $conversation);
+        }
+        
+        // Handle back from filter selection
+        if ($callbackData === 'proj_report_filter_back') {
+            $startDate = $conversation->notes['simple_report_start_date'] ?? '';
+            $endDate = $conversation->notes['simple_report_end_date'] ?? '';
+            return $this->showSimpleReportFilterMenu($chatId, $userId, $conversation, $startDate, $endDate);
+        }
+        
+        // Handle quick filter selections
+        if (str_starts_with($callbackData, 'proj_report_quick_')) {
+            $filterType = str_replace('proj_report_quick_', '', $callbackData);
+            $startDate = $conversation->notes['simple_report_start_date'] ?? '';
+            $endDate = $conversation->notes['simple_report_end_date'] ?? '';
+            
+            return $this->generateSimpleReportWithQuickFilter($chatId, $userId, $startDate, $endDate, $filterType);
+        }
+        
+        // Handle functional direction selection for simple report
+        if (str_starts_with($callbackData, 'proj_report_simple_fn_')) {
+            $fn = str_replace('proj_report_simple_fn_', '', $callbackData);
+            $startDate = $conversation->notes['simple_report_start_date'] ?? '';
+            $endDate = $conversation->notes['simple_report_end_date'] ?? '';
+            
+            return $this->generateSimpleReport($chatId, $userId, $startDate, $endDate, $fn);
+        }
+        
+        // Handle project selection for by-project report
+        if (str_starts_with($callbackData, 'proj_report_select_')) {
+            $projectCode = str_replace('proj_report_select_', '', $callbackData);
+            return $this->showReportDateRangeMenu($chatId, $userId, $projectCode);
+        }
+        
+        // Handle period selection for by-project report (now shows filter menu)
+        if (str_starts_with($callbackData, 'proj_report_period_')) {
+            $remaining = str_replace('proj_report_period_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $period = $parts[1];
+                return $this->showProjectReportFilterMenu($chatId, $userId, $projectCode, $period);
+            }
+        }
+        
+        // Handle project report filter type selection
+        if (str_starts_with($callbackData, 'proj_report_prj_filter_')) {
+            $remaining = str_replace('proj_report_prj_filter_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $period = $parts[1];
+                return $this->showProjectReportQuickFilterMenu($chatId, $userId, $projectCode, $period);
+            }
+        }
+        
+        // Handle back to filter menu from quick filters
+        if (str_starts_with($callbackData, 'proj_report_back_to_filter_')) {
+            $remaining = str_replace('proj_report_back_to_filter_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $period = $parts[1];
+                return $this->showProjectReportFilterMenu($chatId, $userId, $projectCode, $period);
+            }
+        }
+        
+        // Handle project report without filter
+        if (str_starts_with($callbackData, 'proj_report_prj_nofilter_')) {
+            $remaining = str_replace('proj_report_prj_nofilter_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $period = $parts[1];
+                return $this->generateProjectReport($chatId, $userId, $projectCode, $period, null);
+            }
+        }
+        
+        // Handle project report quick filter selection
+        if (str_starts_with($callbackData, 'proj_report_prj_quick_')) {
+            $remaining = str_replace('proj_report_prj_quick_', '', $callbackData);
+            $parts = explode('_', $remaining, 3);
+            if (count($parts) >= 3) {
+                $projectCode = $parts[0];
+                $period = $parts[1];
+                $filterType = $parts[2];
+                return $this->generateProjectReport($chatId, $userId, $projectCode, $period, $filterType);
+            }
+        }
+        
+        // Handle custom filter menu (MUST be before proj_report_custom_ to avoid conflict)
+        if (str_starts_with($callbackData, 'proj_report_custom_filter_')) {
+            $projectCode = str_replace('proj_report_custom_filter_', '', $callbackData);
+            $startDate = $conversation->notes['project_report_start_date'] ?? null;
+            $endDate = $conversation->notes['project_report_end_date'] ?? null;
+            return $this->showProjectReportCustomQuickFilterMenu($chatId, $userId, $conversation, $projectCode);
+        }
+        
+        // Handle back to custom filter menu from quick filters
+        if (str_starts_with($callbackData, 'proj_report_custom_back_to_filter_')) {
+            $projectCode = str_replace('proj_report_custom_back_to_filter_', '', $callbackData);
+            $startDate = $conversation->notes['project_report_start_date'] ?? null;
+            $endDate = $conversation->notes['project_report_end_date'] ?? null;
+            
+            if ($startDate && $endDate) {
+                return $this->showProjectReportCustomFilterMenu($chatId, $userId, $conversation, $projectCode, $startDate, $endDate);
+            } else {
+                // If dates are lost, restart the flow
+                return $this->showProjectReportStartDateMenu($chatId, $userId, $conversation, $projectCode);
+            }
+        }
+        
+        // Handle custom no filter
+        if (str_starts_with($callbackData, 'proj_report_custom_nofilter_')) {
+            $projectCode = str_replace('proj_report_custom_nofilter_', '', $callbackData);
+            return $this->generateProjectReportCustom($chatId, $userId, $conversation, $projectCode, null);
+        }
+        
+        // Handle custom quick filter selection
+        if (str_starts_with($callbackData, 'proj_report_custom_quick_')) {
+            $remaining = str_replace('proj_report_custom_quick_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) >= 2) {
+                $projectCode = $parts[0];
+                $filterType = $parts[1];
+                return $this->generateProjectReportCustom($chatId, $userId, $conversation, $projectCode, $filterType);
+            }
+        }
+        
+        // Handle custom date selection (MUST be last as it's most generic)
+        if (str_starts_with($callbackData, 'proj_report_custom_')) {
+            $projectCode = str_replace('proj_report_custom_', '', $callbackData);
+            return $this->showProjectReportStartDateMenu($chatId, $userId, $conversation, $projectCode);
+        }
+        
+        // Handle notes export project selection
+        if (str_starts_with($callbackData, 'proj_notes_project_')) {
+            $projectCode = str_replace('proj_notes_project_', '', $callbackData);
+            return $this->showNotesExportStatusFilterMenu($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        // Handle notes export status filter selection - generate immediately
+        if (str_starts_with($callbackData, 'proj_notes_generate_')) {
+            $remaining = str_replace('proj_notes_generate_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            $statusFilter = $parts[0]; // active, closed, all
+            $projectCode = $parts[1] ?? null; // null for general journal
+            $projectCode = ($projectCode === 'all') ? null : $projectCode;
+            
+            // Generate export immediately for all period
+            return $this->generateNotesExportAll($chatId, $userId, $conversation, $projectCode, $statusFilter);
+        }
+        
+        // Handle notes export date range selection
+        if (str_starts_with($callbackData, 'proj_notes_period_')) {
+            $remaining = str_replace('proj_notes_period_', '', $callbackData);
+            $parts = explode('_', $remaining); // [statusFilter, projectCode, period]
+            if (count($parts) >= 3) {
+                $statusFilter = $parts[0];
+                $projectCode = $parts[1] === 'all' ? null : $parts[1];
+                $period = $parts[2];
+                return $this->generateNotesExport($chatId, $userId, $conversation, $projectCode, $statusFilter, $period);
+            }
+        }
+        
+        // Handle back from date range to status filter
+        if (str_starts_with($callbackData, 'proj_notes_filter_back_')) {
+            $projectCode = str_replace('proj_notes_filter_back_', '', $callbackData);
+            $projectCode = $projectCode === 'all' ? null : $projectCode;
+            return $this->showNotesExportStatusFilterMenu($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        // Handle notes export custom date selection
+        if (str_starts_with($callbackData, 'proj_notes_custom_')) {
+            $remaining = str_replace('proj_notes_custom_', '', $callbackData);
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) >= 2) {
+                $statusFilter = $parts[0];
+                $projectCode = $parts[1] === 'all' ? null : $parts[1];
+                
+                // Save to conversation
+                $conversation->notes['notes_export_status_filter'] = $statusFilter;
+                $conversation->notes['notes_export_project_code'] = $projectCode;
+                $conversation->update();
+                
+                return $this->showNotesExportStartDateMenu($chatId, $userId, $conversation, $projectCode, $statusFilter);
+            }
+        }
+        
+        $text = 'Неизвестная команда отчёта по проекту';
+        return $this->messageService->sendMessage($chatId, $text);
+    }
+
+    // ========================================
+    // CONTROL PROJECTS METHODS - NEW
+    // ========================================
+
+    /**
+     * Get user's personal control projects list
+     */
+    private function getUserControlProjects(int $userId): array
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        return $userData['control_projects'] ?? [];
+    }
+
+    /**
+     * Show menu to add project to control list
+     */
+    private function showAddControlProjectMenu(string $chatId, int $userId): ServerResponse
+    {
+        // Use ProjectSelector to get all projects including pending ones
+        $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector(
+            $this->databaseService
+        );
+        $allProjects = $projectSelector->getAllProjectsIncludingPending();
+        $userControlProjects = $this->getUserControlProjects($userId);
+        $availableProjects = array_diff($allProjects, array_keys($userControlProjects));
+        
+        // Apply intelligent sorting after filtering
+        $availableProjects = $this->databaseService->sortProjectsIntelligently(array_values($availableProjects));
+        
+        if (empty($availableProjects)) {
+            $text = '➕ <b>Добавить проект на контроль</b>
+
+Все доступные проекты уже добавлены в ваш список контроля.';
+            $keyboard = [[
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']
+            ]];
+        } else {
+            $text = '➕ <b>Добавить проект на контроль</b>
+
+Выберите проект:';
+            $keyboard = [];
+            $row = [];
+            foreach ($availableProjects as $index => $project) {
+                $row[] = ['text' => $project, 'callback_data' => "proj_ctrl_add_{$project}"];
+                if (count($row) == 3 || $index == count($availableProjects) - 1) {
+                    $keyboard[] = $row;
+                    $row = [];
+                }
+            }
+            $keyboard[] = [['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']];
+        }
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    private function showRemoveControlProjectMenu(string $chatId, int $userId): ServerResponse
+    {
+        $userControlProjects = $this->getUserControlProjects($userId);
+        if (empty($userControlProjects)) {
+            $text = '➖ <b>Удалить проект</b>
+
+У вас нет проектов на контроле.';
+        } else {
+            $text = '➖ <b>Удалить проект с контроля</b>
+
+Выберите проект:';
+        }
+        $keyboard = [];
+        if (!empty($userControlProjects)) {
+            $row = [];
+            $projectCodes = array_keys($userControlProjects);
+            // Apply intelligent sorting to project list
+            $projectCodes = $this->databaseService->sortProjectsIntelligently($projectCodes);
+            foreach ($projectCodes as $index => $project) {
+                $row[] = ['text' => $project, 'callback_data' => "proj_ctrl_remove_{$project}"];
+                if (count($row) == 3 || $index == count($projectCodes) - 1) {
+                    $keyboard[] = $row;
+                    $row = [];
+                }
+            }
+        }
+        $keyboard[] = [['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']];
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    private function showControlProjectsList(string $chatId, int $userId): ServerResponse
+    {
+        $controlProjects = $this->getUserControlProjects($userId);
+        $text = '📋 <b>Проекты на контроле</b>
+
+';
+        if (empty($controlProjects)) {
+            $text .= 'У вас пока нет проектов на контроле.';
+        } else {
+            foreach ($controlProjects as $projectCode => $settings) {
+                $text .= "• <b>{$projectCode}</b>\n";
+                $text .= "  📂 Группа: " . ($settings['group_id'] ?? 'не настроена') . "\n";
+                $text .= "  💬 Чат: " . ($settings['chat_id'] ?? 'не настроен') . "\n\n";
+            }
+        }
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']
+        ]];
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    private function showControlProjectSettings(string $chatId, int $userId): ServerResponse
+    {
+        $controlProjects = $this->getUserControlProjects($userId);
+        if (empty($controlProjects)) {
+            $text = '⚙️ <b>Настройки</b>
+
+У вас нет проектов на контроле.';
+            $keyboard = [];
+        } else {
+            $text = '⚙️ <b>Настройки уведомлений</b>
+
+Выберите проект:';
+            $keyboard = [];
+            $row = [];
+            $projectCodes = array_keys($controlProjects);
+            // Apply intelligent sorting to project list
+            $projectCodes = $this->databaseService->sortProjectsIntelligently($projectCodes);
+            foreach ($projectCodes as $index => $project) {
+                $row[] = ['text' => "⚙️ {$project}", 'callback_data' => "proj_ctrl_set_{$project}"];
+                if (count($row) == 2 || $index == count($projectCodes) - 1) {
+                    $keyboard[] = $row;
+                    $row = [];
+                }
+            }
+        }
+        $keyboard[] = [['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']];
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    private function addProjectToControlList(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $controlProjects = $userData['control_projects'] ?? [];
+        if (!isset($controlProjects[$projectCode])) {
+            $controlProjects[$projectCode] = ['group_id' => '', 'chat_id' => '', 'created_at' => date('Y-m-d H:i:s')];
+            $userData['control_projects'] = $controlProjects;
+            $this->databaseService->updateUserData($userId, $userData);
+            $text = "✅ <b>Проект добавлен</b>
+
+<b>{$projectCode}</b> добавлен на контроль.
+
+📝 Не забудьте настроить уведомления!";
+        } else {
+            $text = "ℹ️ <b>Проект уже на контроле</b>
+
+<b>{$projectCode}</b> уже в списке.";
+        }
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']
+        ]];
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    private function removeProjectFromControlList(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $controlProjects = $userData['control_projects'] ?? [];
+        if (isset($controlProjects[$projectCode])) {
+            unset($controlProjects[$projectCode]);
+            $userData['control_projects'] = $controlProjects;
+            $this->databaseService->updateUserData($userId, $userData);
+            $text = "✅ <b>Проект удалён</b>
+
+<b>{$projectCode}</b> удалён с контроля.";
+        } else {
+            $text = "ℹ️ <b>Проект не найден</b>
+
+<b>{$projectCode}</b> не найден в списке.";
+        }
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ПроектыНаКонтроле']
+        ]];
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    private function showProjectControlSettings(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $controlProjects = $this->getUserControlProjects($userId);
+        $projectSettings = $controlProjects[$projectCode] ?? [];
+        
+        $text = "⚙️ <b>Настройки проекта {$projectCode}</b>\n\n";
+        
+        // Display current settings
+        $text .= "📊 <b>Текущие настройки:</b>\n";
+        $text .= "📂 Группа уведомлений: " . ($projectSettings['group_id'] ? "✅ настроена" : "❌ не настроена") . "\n";
+        $text .= "💬 Чат уведомлений: " . ($projectSettings['chat_id'] ? "✅ настроен" : "❌ не настроен") . "\n";
+        $text .= "🔔 Типы уведомлений: " . ($projectSettings['notification_types'] ? implode(', ', $projectSettings['notification_types']) : "все") . "\n";
+        $text .= "⏰ Режим уведомлений: " . ($projectSettings['notification_mode'] ?? "стандартный") . "\n\n";
+        
+        $text .= "Выберите параметр для настройки:";
+        
+        $keyboard = [
+            [
+                ['text' => '📂 Настроить группу', 'callback_data' => "proj_ctrl_cfg_group_{$projectCode}"],
+                ['text' => '💬 Настроить чат', 'callback_data' => "proj_ctrl_cfg_chat_{$projectCode}"]
+            ],
+            [
+                ['text' => '🔔 Типы уведомлений', 'callback_data' => "proj_ctrl_cfg_types_{$projectCode}"],
+                ['text' => '⏰ Режим уведомлений', 'callback_data' => "proj_ctrl_cfg_mode_{$projectCode}"]
+            ],
+            [
+                ['text' => '🧪 Тестовое уведомление', 'callback_data' => "proj_ctrl_test_{$projectCode}"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_ctrl_settings']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Configure notification group for project
+     */
+    private function showGroupConfiguration(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $text = "📂 <b>Настройка группы для проекта {$projectCode}</b>\n\n";
+        $text .= "Выберите группу для получения уведомлений:\n\n";
+        $text .= "💡 <b>Совет:</b> Добавьте бота в нужную группу и сделайте его администратором для отправки уведомлений.";
+        
+        // Get available groups (this would need to be implemented based on your bot's group management)
+        $availableGroups = $this->getAvailableGroups($userId);
+        
+        $keyboard = [];
+        foreach ($availableGroups as $groupId => $groupName) {
+            $keyboard[] = [['text' => "📂 {$groupName}", 'callback_data' => "proj_ctrl_group_select_{$projectCode}_{$groupId}"]];
+        }
+        
+        // Add manual group ID input option
+        $keyboard[] = [['text' => '✏️ Ввести ID группы вручную', 'callback_data' => "proj_ctrl_group_manual_{$projectCode}"]];
+        $keyboard[] = [['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Configure notification chat for project
+     */
+    private function showChatConfiguration(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $text = "💬 <b>Настройка чата для проекта {$projectCode}</b>\n\n";
+        $text .= "Выберите чат для получения уведомлений:\n\n";
+        $text .= "💡 <b>Совет:</b> Можете выбрать личный чат с ботом или любой другой чат, где есть бот.";
+        
+        $keyboard = [
+            [
+                ['text' => '👤 Личный чат', 'callback_data' => "proj_ctrl_chat_select_{$projectCode}_personal"]
+            ],
+            [
+                ['text' => '✏️ Ввести ID чата вручную', 'callback_data' => "proj_ctrl_chat_manual_{$projectCode}"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Configure notification types for project
+     */
+    private function showNotificationTypesConfiguration(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $controlProjects = $this->getUserControlProjects($userId);
+        $currentTypes = $controlProjects[$projectCode]['notification_types'] ?? [];
+        
+        $text = "🔔 <b>Типы уведомлений для проекта {$projectCode}</b>\n\n";
+        $text .= "Выберите типы уведомлений (можно выбрать несколько):\n\n";
+        
+        $notificationTypes = [
+            'daily_reports' => '📊 Ежедневные отчёты',
+            'milestone_updates' => '🎯 Обновления по вехам',
+            'critical_issues' => '🚨 Критические проблемы',
+            'team_updates' => '👥 Обновления команды',
+            'schedule_changes' => '📅 Изменения в графике',
+            'budget_alerts' => '💰 Финансовые уведомления'
+        ];
+        
+        $keyboard = [];
+        foreach ($notificationTypes as $type => $label) {
+            $isSelected = in_array($type, $currentTypes);
+            $prefix = $isSelected ? '✅ ' : '⬜ ';
+            $keyboard[] = [['text' => $prefix . $label, 'callback_data' => "proj_ctrl_toggle_type_{$projectCode}_{$type}"]];
+        }
+        
+        $keyboard[] = [['text' => '💾 Сохранить настройки', 'callback_data' => "proj_ctrl_save_types_{$projectCode}"]];
+        $keyboard[] = [['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Configure notification mode for project
+     */
+    private function showNotificationModeConfiguration(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $controlProjects = $this->getUserControlProjects($userId);
+        $currentMode = $controlProjects[$projectCode]['notification_mode'] ?? 'standard';
+        
+        $text = "⏰ <b>Режим уведомлений для проекта {$projectCode}</b>\n\n";
+        $text .= "Выберите режим уведомлений:\n\n";
+        
+        $modes = [
+            'standard' => '🔔 Стандартный - уведомления в рабочее время',
+            'immediate' => '⚡ Мгновенный - все уведомления сразу',
+            'summary' => '📋 Сводка - итоги в конце дня',
+            'critical_only' => '🚨 Только критические',
+            'disabled' => '🔕 Отключены'
+        ];
+        
+        $keyboard = [];
+        foreach ($modes as $mode => $description) {
+            $prefix = ($mode === $currentMode) ? '✅ ' : '⬜ ';
+            $keyboard[] = [['text' => $prefix . $description, 'callback_data' => "proj_ctrl_mode_select_{$projectCode}_{$mode}"]];
+        }
+        
+        $keyboard[] = [['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Send test notification using manual group/chat settings with proper thread handling
+     */
+    private function sendTestNotification(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $controlProjects = $this->getUserControlProjects($userId);
+        $projectSettings = $controlProjects[$projectCode] ?? [];
+        
+        // Получаем данные пользователя для отображения уровня доступа и ФИО
+        $userData = $this->databaseService->getUserData($userId);
+        $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
+        
+        // Определяем название уровня доступа
+        $accessLevelNames = [
+            1 => 'Пользователь',
+            2 => 'Супервайзер',
+            3 => 'Администратор',
+            4 => 'Суперадминистратор'
+        ];
+        $accessLevelName = $accessLevelNames[$userAccessLevel] ?? 'Гость';
+        
+        // Получаем ФИО из профиля
+        $userFio = $userData['fio'] ?? 'Не указано';
+        
+        $testMessage = "🧪 <b>Тестовое уведомление</b>\n\n";
+        $testMessage .= "📂 Проект: {$projectCode}\n";
+        $testMessage .= "⏰ Время: " . date('d.m.Y H:i:s') . "\n";
+        $testMessage .= "👤 Отправитель: {$accessLevelName} - {$userFio}\n\n";
+        $testMessage .= "✅ Система уведомлений работает корректно!";
+        
+        $testsSent = [];
+        $errors = [];
+        
+        // Отправка в настроенную группу с корректным обработкой chat_id
+        if (!empty($projectSettings['group_id'])) {
+            try {
+                // Подготовка параметров отправки
+                $data = [
+                    'chat_id' => $projectSettings['group_id'],
+                    'text' => $testMessage,
+                    'parse_mode' => 'HTML'
+                ];
+                
+                // Добавляем message_thread_id если указан chat_id (как в системе отчетов)
+                if (!empty($projectSettings['chat_id']) && $projectSettings['chat_id'] !== 'personal') {
+                    $data['message_thread_id'] = $projectSettings['chat_id'];
+                }
+                
+                $result = \Longman\TelegramBot\Request::sendMessage($data);
+                
+                if ($result->isOk()) {
+                    if (!empty($projectSettings['chat_id']) && $projectSettings['chat_id'] !== 'personal') {
+                        $testsSent[] = "группу {$projectSettings['group_id']} (чат {$projectSettings['chat_id']})";
+                    } else {
+                        $testsSent[] = "группу {$projectSettings['group_id']}";
+                    }
+                } else {
+                    $errors[] = 'Группа: ' . $result->getDescription();
+                }
+            } catch (\Exception $e) {
+                $errors[] = 'Группа: ' . $e->getMessage();
+            }
+        }
+        
+        // Отправка в личный чат (если указан personal)
+        if (!empty($projectSettings['chat_id']) && $projectSettings['chat_id'] === 'personal') {
+            try {
+                $result = $this->messageService->sendMessage($userId, $testMessage);
+                if ($result->isOk()) {
+                    $testsSent[] = 'личный чат';
+                } else {
+                    $errors[] = 'Личный чат: ' . $result->getDescription();
+                }
+            } catch (\Exception $e) {
+                $errors[] = 'Личный чат: ' . $e->getMessage();
+            }
+        }
+        
+        // Подготовка ответа
+        $responseText = "🧪 <b>Тестовое уведомление</b>\n\n";
+        
+        if (empty($projectSettings['group_id']) && (empty($projectSettings['chat_id']) || $projectSettings['chat_id'] !== 'personal')) {
+            $responseText .= "❌ Не настроены получатели уведомлений.\n\n";
+            $responseText .= "Настройте группу и чат для получения уведомлений.";
+        } else {
+            if (!empty($testsSent)) {
+                $responseText .= "✅ <b>Успешно отправлено в:</b>\n";
+                foreach ($testsSent as $success) {
+                    $responseText .= "• " . $success . "\n";
+                }
+            }
+            
+            if (!empty($errors)) {
+                $responseText .= "\n❌ <b>Ошибки отправки:</b>\n";
+                foreach ($errors as $error) {
+                    $responseText .= "• " . $error . "\n";
+                }
+            }
+            
+            $responseText .= "\n📍 <b>Настройки проекта:</b>\n";
+            $responseText .= "• Группа: " . ($projectSettings['group_id'] ?? 'Не настроена') . "\n";
+            $responseText .= "• Чат (тема): " . ($projectSettings['chat_id'] ?? 'Не настроен') . "\n";
+        }
+        
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $responseText, $keyboard);
+    }
+    
+    /**
+     * Get available groups for notifications
+     */
+    private function getAvailableGroups(int $userId): array
+    {
+        // This is a placeholder - you would implement actual group discovery
+        // based on your bot's group management system
+        return [
+            '-1001234567890' => 'Группа разработки',
+            '-1001234567891' => 'Группа менеджмента',
+            '-1001234567892' => 'Группа контроля качества'
+        ];
+    }
+    
+    /**
+     * Show manual group ID input interface
+     */
+    private function showManualGroupInput(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        // Set state using file-based manager
+        require_once __DIR__ . '/../Services/ManualInputStateManager.php';
+        $stateManager = new \Longman\TelegramBot\Commands\SystemCommands\Services\ManualInputStateManager();
+        $stateManager->setState($userId, 'group_id', $projectCode);
+        
+        $text = "✏️ <b>Ручной ввод ID группы</b>\n\n";
+        $text .= "Для проекта: <b>{$projectCode}</b>\n\n";
+        $text .= "📝 <b>Инструкции:</b>\n";
+        $text .= "1. Добавьте бота в группу\n";
+        $text .= "2. Сделайте бота администратором\n";
+        $text .= "3. Найдите ID группы (начинается с -100)\n";
+        $text .= "4. Отправьте ID следующим сообщением\n\n";
+        $text .= "💡 Используйте @userinfobot в группе\n\n";
+        $text .= "💬 <b>Ожидаю ввода ID группы...</b>";
+        
+        $keyboard = [[
+            ['text' => '❌ Отмена', 'callback_data' => "proj_ctrl_cfg_group_{$projectCode}"]
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show manual chat ID input interface
+     */
+    private function showManualChatInput(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        // Set file-based state for GenericmessageCommand (primary method)
+        $this->stateManager->setState($userId, 'chat_id', $projectCode);
+        
+        // Set conversation state as backup
+        $conversation = new \Longman\TelegramBot\Conversation($userId, $chatId, '/callback');
+        $conversation->notes['manual_input_type'] = 'chat_id';
+        $conversation->notes['manual_input_project'] = $projectCode;
+        $conversation->update();
+        
+        $text = "✏️ <b>Ручной ввод ID чата</b>\n\n";
+        $text .= "Для проекта: <b>{$projectCode}</b>\n\n";
+        $text .= "📝 <b>Инструкции:</b>\n";
+        $text .= "1. Определите чат для уведомлений\n";
+        $text .= "2. Убедитесь, что бот в чате\n";
+        $text .= "3. Найдите ID чата\n";
+        $text .= "4. Отправьте ID следующим сообщением\n\n";
+        $text .= "💬 <b>Ожидаю ввода ID чата...</b>";
+        
+        $keyboard = [[
+            ['text' => '❌ Отмена', 'callback_data' => "proj_ctrl_cfg_chat_{$projectCode}"]
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle configuration callbacks
+     */
+    private function handleConfigurationCallbacks(CallbackQuery $callbackQuery, string $callbackData, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        
+        // Handle group configuration
+        if (str_starts_with($callbackData, 'proj_ctrl_cfg_group_')) {
+            $projectCode = str_replace('proj_ctrl_cfg_group_', '', $callbackData);
+            return $this->showGroupConfiguration($chatId, $userId, $projectCode);
+        }
+        
+        // Handle chat configuration
+        if (str_starts_with($callbackData, 'proj_ctrl_cfg_chat_')) {
+            $projectCode = str_replace('proj_ctrl_cfg_chat_', '', $callbackData);
+            return $this->showChatConfiguration($chatId, $userId, $projectCode);
+        }
+        
+        // Handle notification types configuration
+        if (str_starts_with($callbackData, 'proj_ctrl_cfg_types_')) {
+            $projectCode = str_replace('proj_ctrl_cfg_types_', '', $callbackData);
+            return $this->showNotificationTypesConfiguration($chatId, $userId, $projectCode);
+        }
+        
+        // Handle notification mode configuration
+        if (str_starts_with($callbackData, 'proj_ctrl_cfg_mode_')) {
+            $projectCode = str_replace('proj_ctrl_cfg_mode_', '', $callbackData);
+            return $this->showNotificationModeConfiguration($chatId, $userId, $projectCode);
+        }
+        
+        return $this->messageService->sendMessage($chatId, 'Неизвестная команда конфигурации');
+    }
+    
+    /**
+     * Set project group
+     */
+    private function setProjectGroup(string $chatId, int $userId, string $projectCode, string $groupId): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $controlProjects = $userData['control_projects'] ?? [];
+        
+        if (!isset($controlProjects[$projectCode])) {
+            $controlProjects[$projectCode] = [];
+        }
+        
+        $controlProjects[$projectCode]['group_id'] = $groupId;
+        $controlProjects[$projectCode]['updated_at'] = date('Y-m-d H:i:s');
+        
+        $userData['control_projects'] = $controlProjects;
+        $this->databaseService->updateUserData($userId, $userData);
+        
+        $text = "✅ <b>Группа настроена</b>\n\nГруппа для проекта {$projectCode} успешно настроена.";
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Set project chat
+     */
+    private function setProjectChat(string $chatId, int $userId, string $projectCode, string $chatType): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $controlProjects = $userData['control_projects'] ?? [];
+        
+        if (!isset($controlProjects[$projectCode])) {
+            $controlProjects[$projectCode] = [];
+        }
+        
+        $targetChatId = ($chatType === 'personal') ? $userId : $chatType;
+        $controlProjects[$projectCode]['chat_id'] = $targetChatId;
+        $controlProjects[$projectCode]['updated_at'] = date('Y-m-d H:i:s');
+        
+        $userData['control_projects'] = $controlProjects;
+        $this->databaseService->updateUserData($userId, $userData);
+        
+        $text = "✅ <b>Чат настроен</b>\n\nЧат для проекта {$projectCode} успешно настроен.";
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Toggle notification type
+     */
+    private function toggleNotificationType(string $chatId, int $userId, string $projectCode, string $notificationType): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $controlProjects = $userData['control_projects'] ?? [];
+        
+        if (!isset($controlProjects[$projectCode])) {
+            $controlProjects[$projectCode] = [];
+        }
+        
+        $currentTypes = $controlProjects[$projectCode]['notification_types'] ?? [];
+        
+        if (in_array($notificationType, $currentTypes)) {
+            $currentTypes = array_diff($currentTypes, [$notificationType]);
+        } else {
+            $currentTypes[] = $notificationType;
+        }
+        
+        $controlProjects[$projectCode]['notification_types'] = array_values($currentTypes);
+        $controlProjects[$projectCode]['updated_at'] = date('Y-m-d H:i:s');
+        
+        $userData['control_projects'] = $controlProjects;
+        $this->databaseService->updateUserData($userId, $userData);
+        
+        // Return to the notification types configuration screen
+        return $this->showNotificationTypesConfiguration($chatId, $userId, $projectCode);
+    }
+    
+    /**
+     * Set notification mode
+     */
+    private function setNotificationMode(string $chatId, int $userId, string $projectCode, string $mode): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $controlProjects = $userData['control_projects'] ?? [];
+        
+        if (!isset($controlProjects[$projectCode])) {
+            $controlProjects[$projectCode] = [];
+        }
+        
+        $controlProjects[$projectCode]['notification_mode'] = $mode;
+        $controlProjects[$projectCode]['updated_at'] = date('Y-m-d H:i:s');
+        
+        $userData['control_projects'] = $controlProjects;
+        $this->databaseService->updateUserData($userId, $userData);
+        
+        $text = "✅ <b>Режим уведомлений сохранён</b>\n\nРежим уведомлений для проекта {$projectCode} успешно изменён.";
+        $keyboard = [[
+            ['text' => '⬅️ Назад', 'callback_data' => "proj_ctrl_set_{$projectCode}"]
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    // ========================================
+    // PROJECT REPORT METHODS - NEW
+    // ========================================
+
+    /**
+     * Show project report menu
+     */
+    private function showProjectReportMenu(string $chatId, int $userId): ServerResponse
+    {
+        $text = '📋 <b>Отчёт по проекту</b>
+
+Выберите тип отчёта:';
+
+        $keyboard = [
+            [
+                ['text' => '📊 Простой отчёт', 'callback_data' => 'proj_report_simple']
+            ],
+            [
+                ['text' => '📁 По-проектный отчёт', 'callback_data' => 'proj_report_byproject']
+            ],
+            [
+                ['text' => '📌 Выгрузка заметок', 'callback_data' => 'proj_report_notes']
+            ],
+            [
+                ['text' => '📋 История выгрузок', 'callback_data' => 'export_key_history']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'pm_menu']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show date range selection for project report
+     */
+    private function showReportDateRangeMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        $text = "📋 <b>Отчёт по проекту {$projectCode}</b>
+
+Выберите период для отчёта:";
+        
+        $today = date('d.m.Y');
+        $yesterday = date('d.m.Y', strtotime('-1 day'));
+        $week = date('d.m.Y', strtotime('-7 days'));
+        $month = date('d.m.Y', strtotime('-30 days'));
+        
+        $keyboard = [
+            [
+                ['text' => '📅 Сегодня', 'callback_data' => "proj_report_period_{$projectCode}_today"]
+            ],
+            [
+                ['text' => '📅 Вчера', 'callback_data' => "proj_report_period_{$projectCode}_yesterday"]
+            ],
+            [
+                ['text' => '📅 Последние 7 дней', 'callback_data' => "proj_report_period_{$projectCode}_week"]
+            ],
+            [
+                ['text' => '📅 Последние 30 дней', 'callback_data' => "proj_report_period_{$projectCode}_month"]
+            ],
+            [
+                ['text' => '📅 Весь период', 'callback_data' => "proj_report_period_{$projectCode}_all"]
+            ],
+            [
+                ['text' => '📆 Выбранный период', 'callback_data' => "proj_report_custom_{$projectCode}"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show filter selection for project report
+     */
+    private function showProjectReportFilterMenu(string $chatId, int $userId, string $projectCode, string $period): ServerResponse
+    {
+        $periodText = $this->getPeriodText($period);
+        
+        $text = "📋 <b>Отчёт по проекту {$projectCode}</b>
+
+📅 Период: {$periodText}
+
+Выберите <b>тип фильтра</b>:";
+        
+        $keyboard = [
+            [
+                ['text' => '⚡ Быстрые фильтры', 'callback_data' => "proj_report_prj_filter_{$projectCode}_{$period}"]
+            ],
+            [
+                ['text' => '📊 Без фильтра (все данные)', 'callback_data' => "proj_report_prj_nofilter_{$projectCode}_{$period}"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => "proj_report_select_{$projectCode}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show quick filters for project report
+     */
+    private function showProjectReportQuickFilterMenu(string $chatId, int $userId, string $projectCode, string $period): ServerResponse
+    {
+        $periodText = $this->getPeriodText($period);
+        
+        $text = "⚡ <b>Быстрые фильтры</b>
+
+📁 Проект: {$projectCode}
+📅 Период: {$periodText}
+
+Выберите нужный фильтр:";
+        
+        $keyboard = [
+            [
+                ['text' => '🔧 Гарантийные работы', 'callback_data' => "proj_report_prj_quick_{$projectCode}_{$period}_warranty"]
+            ],
+            [
+                ['text' => '⚠️ Устранение замечаний РК', 'callback_data' => "proj_report_prj_quick_{$projectCode}_{$period}_rk"]
+            ],
+            [
+                ['text' => '📝 Дополнительные работы', 'callback_data' => "proj_report_prj_quick_{$projectCode}_{$period}_additional"]
+            ],
+            [
+                ['text' => '💤 Непроизводительное время', 'callback_data' => "proj_report_prj_quick_{$projectCode}_{$period}_idle"]
+            ],
+            [
+                ['text' => '🚗 Командировочные расходы', 'callback_data' => "proj_report_prj_quick_{$projectCode}_{$period}_travel"]
+            ],
+            [
+                ['text' => '📂 Документооборот', 'callback_data' => "proj_report_prj_quick_{$projectCode}_{$period}_docs"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => "proj_report_back_to_filter_{$projectCode}_{$period}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Get period text for display
+     */
+    private function getPeriodText(string $period): string
+    {
+        $periodTexts = [
+            'today' => 'Сегодня',
+            'yesterday' => 'Вчера',
+            'week' => 'Последние 7 дней',
+            'month' => 'Последние 30 дней',
+            'all' => 'Весь период'
+        ];
+        
+        return $periodTexts[$period] ?? $period;
+    }
+
+    /**
+     * Show start date selection for project custom report
+     */
+    private function showProjectReportStartDateMenu(string $chatId, int $userId, Conversation $conversation, string $projectCode): ServerResponse
+    {
+        $text = "📋 <b>Отчёт по проекту {$projectCode}</b>\n\nВведите <b>дату начала</b> отчёта в формате ДД.ММ.ГГГГ\n\nПример: 01.10.2025";
+        
+        // Set conversation state
+        $conversation->notes['awaiting_project_report_start_date'] = true;
+        $conversation->notes['project_report_code'] = $projectCode;
+        $conversation->update();
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => "proj_report_select_{$projectCode}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show end date selection for project custom report
+     */
+    private function showProjectReportEndDateMenu(string $chatId, int $userId, Conversation $conversation, string $projectCode, string $startDate): ServerResponse
+    {
+        $text = "📋 <b>Отчёт по проекту {$projectCode}</b>\n\nДата начала: {$startDate}\n\nВведите <b>дату окончания</b> отчёта в формате ДД.ММ.ГГГГ\n\nПример: 13.10.2025";
+        
+        // Set conversation state
+        $conversation->notes['project_report_start_date'] = $startDate;
+        $conversation->notes['awaiting_project_report_end_date'] = true;
+        $conversation->notes['awaiting_project_report_start_date'] = false;
+        $conversation->update();
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => "proj_report_select_{$projectCode}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle project report custom date input (called from GenericmessageCommand)
+     */
+    public function handleProjectReportDateInput(string $chatId, int $userId, string $userInput, Conversation $conversation): ?ServerResponse
+    {
+        $projectCode = $conversation->notes['project_report_code'] ?? null;
+        
+        if (!$projectCode) {
+            return null;
+        }
+        
+        // Check if we're waiting for start date
+        if (isset($conversation->notes['awaiting_project_report_start_date']) && $conversation->notes['awaiting_project_report_start_date']) {
+            // Validate date format
+            if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $userInput)) {
+                $text = '⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 01.10.2025)';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            // Validate date
+            $dateParts = explode('.', $userInput);
+            if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+                $text = '⚠️ Некорректная дата. Проверьте введённые данные.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            return $this->showProjectReportEndDateMenu($chatId, $userId, $conversation, $projectCode, $userInput);
+        }
+        
+        // Check if we're waiting for end date
+        if (isset($conversation->notes['awaiting_project_report_end_date']) && $conversation->notes['awaiting_project_report_end_date']) {
+            // Validate date format
+            if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $userInput)) {
+                $text = '⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 13.10.2025)';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            // Validate date
+            $dateParts = explode('.', $userInput);
+            if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+                $text = '⚠️ Некорректная дата. Проверьте введённые данные.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            $startDate = $conversation->notes['project_report_start_date'];
+            
+            // Clear conversation state
+            $conversation->notes['awaiting_project_report_end_date'] = false;
+            $conversation->notes['project_report_start_date'] = $startDate;
+            $conversation->notes['project_report_end_date'] = $userInput;
+            $conversation->update();
+            
+            return $this->showProjectReportCustomFilterMenu($chatId, $userId, $conversation, $projectCode, $startDate, $userInput);
+        }
+        
+        return null;
+    }
+
+    /**
+     * Show filter menu for custom date project report
+     */
+    private function showProjectReportCustomFilterMenu(string $chatId, int $userId, Conversation $conversation, string $projectCode, string $startDate, string $endDate): ServerResponse
+    {
+        $text = "📋 <b>Отчёт по проекту {$projectCode}</b>\n\n📅 Период: {$startDate} - {$endDate}\n\nВыберите <b>тип фильтра</b>:";
+        
+        // Save dates to conversation
+        $conversation->notes['project_report_start_date'] = $startDate;
+        $conversation->notes['project_report_end_date'] = $endDate;
+        $conversation->update();
+        
+        $keyboard = [
+            [
+                ['text' => '⚡ Быстрые фильтры', 'callback_data' => "proj_report_custom_filter_{$projectCode}"]
+            ],
+            [
+                ['text' => '📊 Без фильтра (все данные)', 'callback_data' => "proj_report_custom_nofilter_{$projectCode}"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => "proj_report_select_{$projectCode}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show quick filters for custom date project report
+     */
+    private function showProjectReportCustomQuickFilterMenu(string $chatId, int $userId, Conversation $conversation, string $projectCode): ServerResponse
+    {
+        $startDate = $conversation->notes['project_report_start_date'] ?? '';
+        $endDate = $conversation->notes['project_report_end_date'] ?? '';
+        
+        $text = "⚡ <b>Быстрые фильтры</b>\n\n📁 Проект: {$projectCode}\n📅 Период: {$startDate} - {$endDate}\n\nВыберите нужный фильтр:";
+        
+        $keyboard = [
+            [
+                ['text' => '🔧 Гарантийные работы', 'callback_data' => "proj_report_custom_quick_{$projectCode}_warranty"]
+            ],
+            [
+                ['text' => '⚠️ Устранение замечаний РК', 'callback_data' => "proj_report_custom_quick_{$projectCode}_rk"]
+            ],
+            [
+                ['text' => '📝 Дополнительные работы', 'callback_data' => "proj_report_custom_quick_{$projectCode}_additional"]
+            ],
+            [
+                ['text' => '💤 Непроизводительное время', 'callback_data' => "proj_report_custom_quick_{$projectCode}_idle"]
+            ],
+            [
+                ['text' => '🚗 Командировочные расходы', 'callback_data' => "proj_report_custom_quick_{$projectCode}_travel"]
+            ],
+            [
+                ['text' => '📂 Документооборот', 'callback_data' => "proj_report_custom_quick_{$projectCode}_docs"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => "proj_report_custom_back_to_filter_{$projectCode}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Generate custom date project report
+     */
+    private function generateProjectReportCustom(string $chatId, int $userId, Conversation $conversation, string $projectCode, ?string $filterType = null): ServerResponse
+    {
+        $startDate = $conversation->notes['project_report_start_date'] ?? null;
+        $endDate = $conversation->notes['project_report_end_date'] ?? null;
+        
+        if (!$startDate || !$endDate) {
+            $text = '⚠️ Ошибка: даты не указаны';
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+        
+        // Convert dates to SQL format
+        $startParts = explode('.', $startDate);
+        $endParts = explode('.', $endDate);
+        $startSql = "{$startParts[2]}-{$startParts[1]}-{$startParts[0]} 00:00:00";
+        $endSql = "{$endParts[2]}-{$endParts[1]}-{$endParts[0]} 23:59:59";
+        
+        // Get tabel entries for the project
+        $entries = $this->getProjectTabelEntries($projectCode, $startSql, $endSql);
+        
+        // Apply filter if specified
+        if ($filterType !== null) {
+            $entries = $this->applyQuickFilter($entries, $filterType);
+        }
+        
+        if (empty($entries)) {
+            $filterText = $filterType ? " для фильтра: " . $this->getQuickFilterName($filterType) : '';
+            $text = "⚠️ <b>Нет данных</b>\n\nЗа период с {$startDate} по {$endDate}{$filterText} нет активностей по проекту {$projectCode}.";
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file
+        $timestamp = date('Y-m-d_H-i-s');
+        $period = "{$startDate}_{$endDate}";
+        $fileName = $filterType 
+            ? $this->createFilteredProjectReportCsv($projectCode, $entries, $period, $filterType)
+            : $this->createProjectReportCsv($projectCode, $entries, $period);
+        
+        // Send status message first
+        $filterInfo = $filterType ? "\n🎯 Фильтр: " . $this->getQuickFilterName($filterType) : '';
+        $text = "✅ <b>Отчёт сформирован</b>\n\n📁 Проект: {$projectCode}\n📅 Период: {$startDate} - {$endDate}{$filterInfo}\n📄 Записей: " . count($entries) . "\n\nФайл готов к скачиванию.";
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send the file
+        $this->sendCsvFile($chatId, $fileName);
+        
+        // Log the export
+        error_log("ProjectHandler: Logging export - userId: {$userId}, fileName: {$fileName}, entries: " . count($entries));
+        $logResult = $this->exportSecurityService->logExport(
+            $userId,
+            'report',
+            $filterType ? "По-проектный ({$this->getQuickFilterName($filterType)})" : 'По-проектный',
+            count($entries),
+            $fileName,
+            $projectCode,
+            $startDate,
+            $endDate,
+            $filterType
+        );
+        error_log("ProjectHandler: Export log result: " . ($logResult ? 'SUCCESS' : 'FAILED'));
+        
+        // Send final menu
+        $keyboard = [
+            [
+                ['text' => '🔄 Сформировать ещё один отчёт', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ],
+            [
+                ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, "👍 Готово!", $keyboard);
+    }
+
+    /**
+     * Generate and send project report
+     */
+    private function generateProjectReport(string $chatId, int $userId, string $projectCode, string $period, ?string $filterType = null): ServerResponse
+    {
+        // Calculate date range based on period
+        $startDate = null;
+        $endDate = date('Y-m-d 23:59:59');
+        $periodText = $this->getPeriodText($period);
+        
+        switch ($period) {
+            case 'today':
+                $startDate = date('Y-m-d 00:00:00');
+                break;
+            case 'yesterday':
+                $startDate = date('Y-m-d 00:00:00', strtotime('-1 day'));
+                $endDate = date('Y-m-d 23:59:59', strtotime('-1 day'));
+                break;
+            case 'week':
+                $startDate = date('Y-m-d 00:00:00', strtotime('-7 days'));
+                break;
+            case 'month':
+                $startDate = date('Y-m-d 00:00:00', strtotime('-30 days'));
+                break;
+            case 'all':
+                $startDate = null;
+                break;
+        }
+        
+        // Get tabel entries for the project
+        $entries = $this->getProjectTabelEntries($projectCode, $startDate, $endDate);
+        
+        // Apply filter if specified
+        if ($filterType !== null) {
+            $entries = $this->applyQuickFilter($entries, $filterType);
+        }
+        
+        if (empty($entries)) {
+            $filterText = $filterType ? " для фильтра: " . $this->getQuickFilterName($filterType) : '';
+            $text = "⚠️ <b>Нет данных</b>
+
+За выбранный период ({$periodText}){$filterText} нет активностей по проекту {$projectCode}.";
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file
+        $fileName = $filterType 
+            ? $this->createFilteredProjectReportCsv($projectCode, $entries, $period, $filterType)
+            : $this->createProjectReportCsv($projectCode, $entries, $period);
+        
+        // Send status message first
+        $filterInfo = $filterType ? "\n🎯 Фильтр: " . $this->getQuickFilterName($filterType) : '';
+        $text = "✅ <b>Отчёт сформирован</b>
+
+📁 Проект: {$projectCode}
+📅 Период: {$periodText}{$filterInfo}
+📄 Записей: " . count($entries) . "
+
+Файл готов к скачиванию.";
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send the file
+        $this->sendCsvFile($chatId, $fileName);
+        
+        // Log the export
+        error_log("ProjectHandler: Logging export - userId: {$userId}, fileName: {$fileName}, entries: " . count($entries));
+        $logResult = $this->exportSecurityService->logExport(
+            $userId,
+            'report',
+            $filterType ? "По-проектный ({$this->getQuickFilterName($filterType)})" : 'По-проектный',
+            count($entries),
+            $fileName,
+            $projectCode,
+            $startDate,
+            $endDate,
+            $filterType
+        );
+        error_log("ProjectHandler: Export log result: " . ($logResult ? 'SUCCESS' : 'FAILED'));
+        
+        // Send final menu
+        $keyboard = [
+            [
+                ['text' => '🔄 Сформировать ещё один отчёт', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ],
+            [
+                ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, "👍 Готово!", $keyboard);
+    }
+
+    /**
+     * Get tabel entries for a specific project
+     */
+    private function getProjectTabelEntries(string $projectCode, ?string $startDate, string $endDate): array
+    {
+        // Get entries from database
+        $rawEntries = $this->databaseService->getProjectTabelEntries($projectCode, $startDate, $endDate);
+        
+        // Get all users to map user IDs to FIOs and FN
+        $allUsers = $this->databaseService->getAllUsers();
+        $userMap = [];
+        $userFnMap = [];
+        
+        // Create user ID to FIO and FN mapping
+        foreach ($allUsers as $user) {
+            $userMap[$user['user_id']] = $user['data']['fio'] ?? 'Неизвестно';
+            $userFnMap[$user['user_id']] = $user['data']['functional_direction'] ?? 'Не указано';
+        }
+        
+        // Enrich entries with FIO and FN, exclude testers
+        $entries = [];
+        foreach ($rawEntries as $row) {
+            $userFn = $userFnMap[$row['user_id']] ?? 'Не указано';
+            
+            // CRITICAL: Exclude Тестировщик from all reports
+            if ($userFn === 'Тестировщик') {
+                continue;
+            }
+            
+            $entries[] = [
+                'user_id' => $row['user_id'],
+                'fio' => $userMap[$row['user_id']] ?? 'Неизвестно',
+                'fn' => $userFn,
+                'dt' => $row['dt'],
+                'message' => $row['message']
+            ];
+        }
+        
+        return $entries;
+    }
+
+    /**
+     * Create CSV file for project report
+     */
+    private function createProjectReportCsv(string $projectCode, array $entries, string $period): string
+    {
+        $uploadsDir = __DIR__ . '/../../Uploads';
+        if (!is_dir($uploadsDir)) {
+            mkdir($uploadsDir, 0755, true);
+        }
+        
+        $timestamp = date('Y-m-d_H-i-s');
+        $fileName = "project_report_{$projectCode}_{$period}_{$timestamp}.csv";
+        $filePath = $uploadsDir . '/' . $fileName;
+        
+        $output = fopen($filePath, 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fprintf($output, "\xEF\xBB\xBF");
+        
+        // Write header - UNIFIED FORMAT matching menu structure
+        fputcsv($output, ['Проект', 'Дата', 'Процесс (ФН)', 'Уровень 1', 'Уровень 2', 'Уровень 3', 'Уровень 4', 'Уровень 5', 'Фамилия']);
+        
+        // Write data
+        foreach ($entries as $entry) {
+            // Skip milestone entries (вехи)
+            if ($this->isMilestoneEntry($entry['message'])) {
+                continue;
+            }
+            
+            // Determine functional direction from entry if available
+            $fn = $entry['fn'] ?? 'Не указано';
+            $parsed = $this->parseReportEntry($entry['message'], $fn);
+            // NEW ORDER: Project, Date, Process, Level 1, Level 2, Level 3, Level 4, Level 5, Name
+            fputcsv($output, [
+                $parsed['project'],
+                $parsed['date'],
+                $parsed['process'],
+                $parsed['osnovnaya'],  // Уровень 1
+                $parsed['tip1'],        // Уровень 2
+                $parsed['tip2'],        // Уровень 3
+                $parsed['tip3'],        // Уровень 4
+                $parsed['tip4'] ?? '',  // Уровень 5 (если есть)
+                $entry['fio']
+            ]);
+        }
+        
+        fclose($output);
+        
+        return $fileName;
+    }
+    
+    /**
+     * Create filtered CSV file for project report
+     */
+    private function createFilteredProjectReportCsv(string $projectCode, array $entries, string $period, string $filterType): string
+    {
+        $uploadsDir = __DIR__ . '/../../Uploads';
+        if (!is_dir($uploadsDir)) {
+            mkdir($uploadsDir, 0755, true);
+        }
+        
+        $timestamp = date('Y-m-d_H-i-s');
+        $fileName = "project_filtered_{$projectCode}_{$filterType}_{$period}_{$timestamp}.csv";
+        $filePath = $uploadsDir . '/' . $fileName;
+        
+        $output = fopen($filePath, 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fprintf($output, "\xEF\xBB\xBF");
+        
+        // Write header - UNIFIED FORMAT matching menu structure
+        fputcsv($output, ['Проект', 'Дата', 'Процесс (ФН)', 'Уровень 1', 'Уровень 2', 'Уровень 3', 'Уровень 4', 'Уровень 5', 'Фамилия']);
+        
+        // Write data
+        foreach ($entries as $entry) {
+            // Skip milestone entries (вехи)
+            if ($this->isMilestoneEntry($entry['message'])) {
+                continue;
+            }
+            
+            // Determine functional direction from entry if available
+            $fn = $entry['fn'] ?? 'Не указано';
+            $parsed = $this->parseReportEntry($entry['message'], $fn);
+            // NEW ORDER: Project, Date, Process, Level 1, Level 2, Level 3, Level 4, Level 5, Name
+            fputcsv($output, [
+                $parsed['project'],
+                $parsed['date'],
+                $parsed['process'],
+                $parsed['osnovnaya'],  // Уровень 1
+                $parsed['tip1'],        // Уровень 2
+                $parsed['tip2'],        // Уровень 3
+                $parsed['tip3'],        // Уровень 4
+                $parsed['tip4'] ?? '',  // Уровень 5 (если есть)
+                $entry['fio']
+            ]);
+        }
+        
+        fclose($output);
+        
+        return $fileName;
+    }
+
+    /**
+     * Send CSV file to user
+     */
+    private function sendCsvFile(string $chatId, string $fileName, string $caption = '📄 Отчёт по проекту'): bool
+    {
+        $filePath = __DIR__ . '/../../Uploads/' . $fileName;
+        
+        if (!file_exists($filePath)) {
+            error_log("ProjectHandler: CSV file not found: {$filePath}");
+            return false;
+        }
+        
+        try {
+            $result = \Longman\TelegramBot\Request::sendDocument([
+                'chat_id' => $chatId,
+                'document' => \Longman\TelegramBot\Request::encodeFile($filePath),
+                'caption' => $caption
+            ]);
+            
+            // Clean up file after sending
+            if ($result->isOk()) {
+                unlink($filePath);
+            }
+            
+            return $result->isOk();
+        } catch (\Exception $e) {
+            error_log("ProjectHandler: Error sending CSV file: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // ========================================
+    // SIMPLE REPORT METHODS - NEW
+    // ========================================
+
+    /**
+     * Show by-project report menu (the old implementation)
+     */
+    private function showByProjectReportMenu(string $chatId, int $userId): ServerResponse
+    {
+        $text = '📁 <b>По-проектный отчёт</b>
+
+Отчёт по всем активностям всех сотрудников на выбранном проекте.
+
+Выберите проект:';
+
+        // Get user's report projects first
+        $personalProjects = $this->getUserReportProjects($userId);
+        
+        // Get all available projects (including pending ones from database)
+        $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector(
+            $this->databaseService
+        );
+        $allProjects = $projectSelector->getAllProjectsIncludingPending();
+        
+        // Combine projects: personal projects first, then others
+        $displayProjects = array_unique(array_merge($personalProjects, $allProjects));
+        
+        // CRITICAL: Apply intelligent sorting to the combined project list
+        $displayProjects = $this->databaseService->sortProjectsIntelligently($displayProjects);
+        
+        if (empty($displayProjects)) {
+            $text .= '
+
+⚠️ Проекты не найдены.';
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        $keyboard = [];
+        
+        // Create buttons for projects (3 per row)
+        $row = [];
+        foreach ($displayProjects as $index => $project) {
+            $row[] = ['text' => $project, 'callback_data' => "proj_report_select_{$project}"];
+            
+            if (count($row) == 3 || $index == count($displayProjects) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show start date selection for simple report
+     */
+    private function showSimpleReportStartDateMenu(string $chatId, int $userId, Conversation $conversation): ServerResponse
+    {
+        $text = '📊 <b>Простой отчёт</b>
+
+Введите <b>дату начала</b> отчёта в формате ДД.ММ.ГГГГ
+
+Пример: 01.10.2025';
+        
+        // Set conversation state
+        $conversation->notes['awaiting_simple_report_start_date'] = true;
+        $conversation->update();
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show end date selection for simple report
+     */
+    private function showSimpleReportEndDateMenu(string $chatId, int $userId, Conversation $conversation, string $startDate): ServerResponse
+    {
+        $text = "📊 <b>Простой отчёт</b>
+
+Дата начала: {$startDate}
+
+Введите <b>дату окончания</b> отчёта в формате ДД.ММ.ГГГГ
+
+Пример: 13.10.2025";
+        
+        // Set conversation state
+        $conversation->notes['simple_report_start_date'] = $startDate;
+        $conversation->notes['awaiting_simple_report_end_date'] = true;
+        $conversation->notes['awaiting_simple_report_start_date'] = false;
+        $conversation->update();
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show filter type selection for simple report
+     */
+    private function showSimpleReportFilterMenu(string $chatId, int $userId, Conversation $conversation, string $startDate, string $endDate): ServerResponse
+    {
+        $text = "📊 <b>Простой отчёт</b>
+
+📅 Период: {$startDate} - {$endDate}
+
+Выберите <b>тип фильтра</b>:";
+        
+        // Set conversation state
+        $conversation->notes['simple_report_start_date'] = $startDate;
+        $conversation->notes['simple_report_end_date'] = $endDate;
+        $conversation->notes['awaiting_simple_report_end_date'] = false;
+        $conversation->update();
+        
+        $keyboard = [
+            [
+                ['text' => '👥 По ФН (функциональное направление)', 'callback_data' => 'proj_report_filter_by_fn']
+            ],
+            [
+                ['text' => '⚡ Быстрые фильтры', 'callback_data' => 'proj_report_filter_quick']
+            ],
+            [
+                ['text' => '📊 Без фильтра (все данные)', 'callback_data' => 'proj_report_simple_fn_all']
+            ],
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show functional direction selection for simple report
+     */
+    private function showSimpleReportFnMenu(string $chatId, int $userId, Conversation $conversation, string $startDate, string $endDate): ServerResponse
+    {
+        $text = "📊 <b>Простой отчёт</b>
+
+📅 Период: {$startDate} - {$endDate}
+
+Выберите <b>Функциональное направление</b>:";
+        
+        // Set conversation state
+        $conversation->notes['simple_report_start_date'] = $startDate;
+        $conversation->notes['simple_report_end_date'] = $endDate;
+        $conversation->notes['awaiting_simple_report_end_date'] = false;
+        $conversation->update();
+        
+        // Get user access level to conditionally show Тестировщик
+        $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
+        
+        $keyboard = [
+            [
+                ['text' => '📊 Все ФН', 'callback_data' => 'proj_report_simple_fn_all']
+            ],
+            [
+                ['text' => '👷‍♂️ Мобильная бригада', 'callback_data' => 'proj_report_simple_fn_Мобильная бригада']
+            ],
+            [
+                ['text' => '⚙️ Пусконаладка', 'callback_data' => 'proj_report_simple_fn_Пусконаладка']
+            ],
+            [
+                ['text' => '🔧 Шеф-монтаж', 'callback_data' => 'proj_report_simple_fn_Шеф-монтаж']
+            ]
+        ];
+        
+        // Add Тестировщик option only for admins and super admins
+        if ($userAccessLevel >= DatabaseService::ACCESS_LEVEL_ADMIN) {
+            $keyboard[] = [
+                ['text' => '🧪 Тестировщик', 'callback_data' => 'proj_report_simple_fn_Тестировщик']
+            ];
+        }
+        
+        // Add back button
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => 'proj_report_filter_back']
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show quick filter selection for simple report
+     */
+    private function showSimpleReportQuickFilterMenu(string $chatId, int $userId, Conversation $conversation): ServerResponse
+    {
+        $startDate = $conversation->notes['simple_report_start_date'] ?? '';
+        $endDate = $conversation->notes['simple_report_end_date'] ?? '';
+        
+        $text = "⚡ <b>Быстрые фильтры</b>
+
+📅 Период: {$startDate} - {$endDate}
+
+Выберите нужный фильтр:";
+        
+        $keyboard = [
+            [
+                ['text' => '🔧 Гарантийные работы', 'callback_data' => 'proj_report_quick_warranty']
+            ],
+            [
+                ['text' => '⚠️ Устранение замечаний РК', 'callback_data' => 'proj_report_quick_rk']
+            ],
+            [
+                ['text' => '📝 Дополнительные работы', 'callback_data' => 'proj_report_quick_additional']
+            ],
+            [
+                ['text' => '💤 Непроизводительное время', 'callback_data' => 'proj_report_quick_idle']
+            ],
+            [
+                ['text' => '🚗 Командировочные расходы', 'callback_data' => 'proj_report_quick_travel']
+            ],
+            [
+                ['text' => '📂 Документооборот', 'callback_data' => 'proj_report_quick_docs']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_report_filter_back']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle simple report date input
+     */
+    public function handleSimpleReportDateInput(string $chatId, int $userId, string $userInput, Conversation $conversation): ?ServerResponse
+    {
+        // Check if we're waiting for start date
+        if (isset($conversation->notes['awaiting_simple_report_start_date']) && $conversation->notes['awaiting_simple_report_start_date']) {
+            // Validate date format
+            if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $userInput)) {
+                $text = '⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 01.10.2025)';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            // Validate date
+            $dateParts = explode('.', $userInput);
+            if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+                $text = '⚠️ Некорректная дата. Проверьте введённые данные.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            return $this->showSimpleReportEndDateMenu($chatId, $userId, $conversation, $userInput);
+        }
+        
+        // Check if we're waiting for end date
+        if (isset($conversation->notes['awaiting_simple_report_end_date']) && $conversation->notes['awaiting_simple_report_end_date']) {
+            // Validate date format
+            if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $userInput)) {
+                $text = '⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 13.10.2025)';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            // Validate date
+            $dateParts = explode('.', $userInput);
+            if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+                $text = '⚠️ Некорректная дата. Проверьте введённые данные.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            $startDate = $conversation->notes['simple_report_start_date'];
+            return $this->showSimpleReportFilterMenu($chatId, $userId, $conversation, $startDate, $userInput);
+        }
+        
+        return null;
+    }
+
+    /**
+     * Generate and send simple report for functional direction
+     */
+    private function generateSimpleReport(string $chatId, int $userId, string $startDate, string $endDate, string $fn): ServerResponse
+    {
+        // Convert dates to SQL format
+        $startParts = explode('.', $startDate);
+        $endParts = explode('.', $endDate);
+        $startSql = "{$startParts[2]}-{$startParts[1]}-{$startParts[0]} 00:00:00";
+        $endSql = "{$endParts[2]}-{$endParts[1]}-{$endParts[0]} 23:59:59";
+        
+        // Get entries based on functional direction
+        if ($fn === 'all') {
+            $entries = $this->getSimpleReportEntries($startSql, $endSql, null);
+            $fnText = 'Все ФН';
+        } else {
+            $entries = $this->getSimpleReportEntries($startSql, $endSql, $fn);
+            $fnText = $fn;
+        }
+        
+        if (empty($entries)) {
+            $text = "⚠️ <b>Нет данных</b>
+
+За период с {$startDate} по {$endDate} нет активностей для ФН: {$fnText}.";
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file
+        $fileName = $this->createSimpleReportCsv($startDate, $endDate, $fn, $entries);
+        
+        // Send status message first
+        $text = "✅ <b>Простой отчёт сформирован</b>
+
+📅 Период: {$startDate} - {$endDate}
+🎯 ФН: {$fnText}
+📄 Записей: " . count($entries) . "
+
+Файл готов к скачиванию.";
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send the file
+        $this->sendCsvFile($chatId, $fileName);
+        
+        // Log the export
+        error_log("ProjectHandler: Logging simple report export - userId: {$userId}, fileName: {$fileName}, entries: " . count($entries));
+        $logResult = $this->exportSecurityService->logExport(
+            $userId,
+            'report',
+            "Простой отчёт ({$fnText})",
+            count($entries),
+            $fileName,
+            null,  // no project code for simple reports
+            $startSql,
+            $endSql,
+            $fn
+        );
+        error_log("ProjectHandler: Export log result: " . ($logResult ? 'SUCCESS' : 'FAILED'));
+        
+        // Send final menu
+        $keyboard = [
+            [
+                ['text' => '🔄 Сформировать ещё один отчёт', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ],
+            [
+                ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, "👍 Готово!", $keyboard);
+    }
+
+    /**
+     * Get tabel entries for simple report
+     */
+    private function getSimpleReportEntries(string $startDate, string $endDate, ?string $functionalDirection): array
+    {
+        // CRITICAL FIX: Expand date range to catch entries added on different dates
+        // Users can add entries on 02.10.2025 but mark them for 01.10.2025
+        // So we need to query a wider range and filter by message date
+        
+        // Expand range by 7 days in both directions
+        $startDateTime = new \DateTime($startDate);
+        $endDateTime = new \DateTime($endDate);
+        $startDateTime->modify('-7 days');
+        $endDateTime->modify('+7 days');
+        $expandedStartSql = $startDateTime->format('Y-m-d H:i:s');
+        $expandedEndSql = $endDateTime->format('Y-m-d H:i:s');
+        
+        // Get all entries for the EXPANDED date range
+        $rawEntries = $this->databaseService->getSimpleReportEntries($expandedStartSql, $expandedEndSql);
+        
+        // Convert target date range to DD.MM.YYYY format for comparison
+        $targetStartDate = (new \DateTime($startDate))->format('d.m.Y');
+        $targetEndDate = (new \DateTime($endDate))->format('d.m.Y');
+        
+        // Get all users to get FIO and FN mapping
+        $allUsers = $this->databaseService->getAllUsers();
+        $userMap = [];
+        $userFnMap = [];
+        
+        // Create user ID to FIO and FN mapping
+        foreach ($allUsers as $user) {
+            $userMap[$user['user_id']] = $user['data']['fio'] ?? 'Неизвестно';
+            $userFnMap[$user['user_id']] = $user['data']['functional_direction'] ?? 'Не указано';
+        }
+        
+        $entries = [];
+        foreach ($rawEntries as $row) {
+            $userFn = $userFnMap[$row['user_id']] ?? 'Не указано';
+            
+            // CRITICAL: Exclude Тестировщик from all reports
+            if ($userFn === 'Тестировщик') {
+                continue;
+            }
+            
+            // Filter by functional direction if specified
+            if ($functionalDirection !== null && $userFn !== $functionalDirection) {
+                continue;
+            }
+            
+            // CRITICAL FIX: Extract date from MESSAGE and filter by it
+            $messageDate = $this->extractDateFromMessage($row['message']);
+            if ($messageDate === null) {
+                // Cannot extract date - skip this entry
+                continue;
+            }
+            
+            // Convert to timestamp for comparison
+            $messageDateObj = \DateTime::createFromFormat('d.m.Y', $messageDate);
+            $targetStartDateObj = \DateTime::createFromFormat('d.m.Y', $targetStartDate);
+            $targetEndDateObj = \DateTime::createFromFormat('d.m.Y', $targetEndDate);
+            
+            if (!$messageDateObj || !$targetStartDateObj || !$targetEndDateObj) {
+                // Date parsing failed - skip
+                continue;
+            }
+            
+            // Check if message date is within target range
+            if ($messageDateObj >= $targetStartDateObj && $messageDateObj <= $targetEndDateObj) {
+                $entries[] = [
+                    'user_id' => $row['user_id'],
+                    'fio' => $userMap[$row['user_id']] ?? 'Неизвестно',
+                    'fn' => $userFn,
+                    'dt' => $row['dt'],
+                    'message' => $row['message']
+                ];
+            }
+        }
+        
+        return $entries;
+    }
+
+    /**
+     * Extract date from message text
+     * Returns date in DD.MM.YYYY format or null if not found
+     */
+    private function extractDateFromMessage(string $message): ?string
+    {
+        // Try project-based format: "✅DD.MM.YYYY, Проект..." (with optional space/newline after emoji)
+        if (preg_match('/✅\s*(\d{2}\.\d{2}\.\d{4}),\s*Проект/', $message, $matches)) {
+            return $matches[1];
+        }
+        
+        // Try incident format: "😨 ⚠️ DD.MM.YYYY, Проект..."
+        if (preg_match('/😨\s*⚠️\s*(\d{2}\.\d{2}\.\d{4}),\s*Проект/', $message, $matches)) {
+            return $matches[1];
+        }
+        
+        // Try current activity format: "Запись в табель от <b>DD.MM.YYYY</b>"
+        if (preg_match('/Запись в табель от <b>(\d{2}\.\d{2}\.\d{4})<\/b>/', $message, $matches)) {
+            return $matches[1];
+        }
+        
+        // Try old RK format: "Запись в табель от <b>DD.MM.YYYY</b>, в проект..."
+        if (preg_match('/от <b>(\d{2}\.\d{2}\.\d{4})<\/b>,\s*в проект/', $message, $matches)) {
+            return $matches[1];
+        }
+        
+        return null;
+    }
+
+    /**
+     * Generate and send simple report with quick filter
+     */
+    private function generateSimpleReportWithQuickFilter(string $chatId, int $userId, string $startDate, string $endDate, string $filterType): ServerResponse
+    {
+        // Convert dates to SQL format
+        $startParts = explode('.', $startDate);
+        $endParts = explode('.', $endDate);
+        $startSql = "{$startParts[2]}-{$startParts[1]}-{$startParts[0]} 00:00:00";
+        $endSql = "{$endParts[2]}-{$endParts[1]}-{$endParts[0]} 23:59:59";
+        
+        // Get all entries for the date range
+        $allEntries = $this->getSimpleReportEntries($startSql, $endSql, null);
+        
+        // Apply quick filter
+        $filteredEntries = $this->applyQuickFilter($allEntries, $filterType);
+        $filterName = $this->getQuickFilterName($filterType);
+        
+        if (empty($filteredEntries)) {
+            $text = "⚠️ <b>Нет данных</b>
+
+За период с {$startDate} по {$endDate} нет активностей для фильтра: {$filterName}.";
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file with filter name
+        $fileName = $this->createFilteredReportCsv($startDate, $endDate, $filterType, $filteredEntries);
+        
+        // Send status message first
+        $text = "✅ <b>Отчёт сформирован</b>
+
+📅 Период: {$startDate} - {$endDate}
+🎯 Фильтр: {$filterName}
+📄 Записей: " . count($filteredEntries) . "
+
+Файл готов к скачиванию.";
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send the file
+        $this->sendCsvFile($chatId, $fileName);
+        
+        // Log the export
+        error_log("ProjectHandler: Logging simple report export - userId: {$userId}, fileName: {$fileName}, entries: " . count($filteredEntries));
+        $logResult = $this->exportSecurityService->logExport(
+            $userId,
+            'report',
+            "Простой отчёт ({$filterName})",
+            count($filteredEntries),
+            $fileName,
+            null,  // no project code for simple reports
+            $startSql,
+            $endSql,
+            $filterType
+        );
+        error_log("ProjectHandler: Export log result: " . ($logResult ? 'SUCCESS' : 'FAILED'));
+        
+        // Send final menu
+        $keyboard = [
+            [
+                ['text' => '🔄 Сформировать ещё один отчёт', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ],
+            [
+                ['text' => '⬅️ Назад к проектам', 'callback_data' => 'category_Проекты']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, "👍 Готово!", $keyboard);
+    }
+    
+    /**
+     * Apply quick filter to entries
+     */
+    private function applyQuickFilter(array $entries, string $filterType): array
+    {
+        $filtered = [];
+        
+        foreach ($entries as $entry) {
+            $message = mb_strtolower($entry['message']);
+            $shouldInclude = false;
+            
+            switch ($filterType) {
+                case 'warranty':
+                    // Гарантийные работы
+                    if (strpos($message, 'гарант') !== false || 
+                        strpos($message, 'рабгарантии') !== false ||
+                        strpos($message, 'шм_рабгарантии') !== false) {
+                        $shouldInclude = true;
+                    }
+                    break;
+                    
+                case 'rk':
+                    // Устранение замечаний РК
+                    if (strpos($message, 'устрзам') !== false ||
+                        strpos($message, 'уз_рк') !== false ||
+                        strpos($message, 'шм_уз_рк') !== false ||
+                        strpos($message, 'замечани') !== false) {
+                        $shouldInclude = true;
+                    }
+                    break;
+                    
+                case 'additional':
+                    // Дополнительные работы (Прочее)
+                    if (strpos($message, 'прочее') !== false ||
+                        strpos($message, 'шмр_прочее') !== false ||
+                        strpos($message, 'моббриг_прочее') !== false) {
+                        $shouldInclude = true;
+                    }
+                    break;
+                    
+                case 'idle':
+                    // Непроизводительное время
+                    if (strpos($message, 'простой') !== false ||
+                        strpos($message, 'ожидание') !== false ||
+                        strpos($message, 'шм_простой') !== false) {
+                        $shouldInclude = true;
+                    }
+                    break;
+                    
+                case 'travel':
+                    // Командировочные расходы
+                    if (strpos($message, 'дорога') !== false ||
+                        strpos($message, 'подготовка к') !== false ||
+                        strpos($message, 'подготовкакпоездке') !== false ||
+                        strpos($message, 'моббриг_подготовкакпоездке') !== false ||
+                        strpos($message, 'шмр_дорога') !== false) {
+                        $shouldInclude = true;
+                    }
+                    break;
+                    
+                case 'docs':
+                    // Документооборот
+                    if (strpos($message, 'сдача') !== false ||
+                        strpos($message, 'документ') !== false ||
+                        strpos($message, 'авансов') !== false ||
+                        strpos($message, 'отчёт') !== false) {
+                        $shouldInclude = true;
+                    }
+                    break;
+            }
+            
+            if ($shouldInclude) {
+                $filtered[] = $entry;
+            }
+        }
+        
+        return $filtered;
+    }
+    
+    /**
+     * Get quick filter display name
+     */
+    private function getQuickFilterName(string $filterType): string
+    {
+        $filterNames = [
+            'warranty' => '🔧 Гарантийные работы',
+            'rk' => '⚠️ Устранение замечаний РК',
+            'additional' => '📝 Дополнительные работы',
+            'idle' => '💤 Непроизводительное время',
+            'travel' => '🚗 Командировочные расходы',
+            'docs' => '📂 Документооборот'
+        ];
+        
+        return $filterNames[$filterType] ?? 'Неизвестный фильтр';
+    }
+    
+    /**
+     * Parse description and extract main activity and subcategories
+     */
+    private function parseDescription(string $desc): array
+    {
+        $desc = trim($desc);
+        
+        // Remove emojis with comprehensive regex
+        $desc = preg_replace('/[\x{1F600}-\x{1FFFF}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F1E0}-\x{1F1FF}\x{2702}-\x{27B0}\x{24C2}-\x{1F251}]+/u', '', $desc);
+        $desc = trim($desc);
+        
+        // Special handling for INCIDENT format - remove pause emoji from main
+        if (strpos($desc, 'Простой') !== false) {
+            // Remove pause emoji (both with and without variation selector)
+            $desc = preg_replace('/⏸[\x{FE0F}]?/u', '', $desc);
+            $desc = preg_replace('/\s+/', ' ', $desc); // Normalize whitespace
+            $desc = trim($desc);
+        }
+        
+        // Find first parenthesis
+        $firstParen = strpos($desc, '(');
+        if ($firstParen !== false) {
+            $mainPart = trim(substr($desc, 0, $firstParen));
+            $subsString = trim(substr($desc, $firstParen));
+        } else {
+            $mainPart = $desc;
+            $subsString = '';
+        }
+        
+        $subs = $this->extractSubs($subsString);
+        
+        // If we have one group without nested parentheses, split by commas
+        if (count($subs) === 1 && strpos($subs[0], '(') === false && strpos($subs[0], ',') !== false) {
+            $subs = array_map('trim', explode(',', $subs[0]));
+        }
+        
+        return ['main' => $mainPart, 'subs' => $subs];
+    }
+    
+    /**
+     * Extract subcategories from parentheses string
+     */
+    private function extractSubs(string $s): array
+    {
+        $subs = [];
+        $s = trim($s);
+        
+        if (empty($s)) {
+            return $subs;
+        }
+        
+        // Split by top-level parentheses
+        $i = 0;
+        $len = strlen($s);
+        
+        while ($i < $len) {
+            if ($s[$i] === '(') {
+                $start = $i;
+                $count = 1;
+                $i++;
+                
+                while ($i < $len && $count > 0) {
+                    if ($s[$i] === '(') {
+                        $count++;
+                    } elseif ($s[$i] === ')') {
+                        $count--;
+                    }
+                    $i++;
+                }
+                
+                if ($count === 0) {
+                    $sub = trim(substr($s, $start + 1, $i - $start - 2));
+                    $subs[] = $sub;
+                    // Skip spaces after closing bracket
+                    while ($i < $len && $s[$i] === ' ') {
+                        $i++;
+                    }
+                    continue;
+                }
+            } else {
+                $i++;
+            }
+        }
+        
+        return $subs;
+    }
+    
+    /**
+     * Get process activity name based on process type
+     */
+    private function getProcessActivity(string $process): string
+    {
+        if ($process === 'Шеф-монтаж') {
+            return 'Шеф-монтажные работы';
+        } elseif ($process === 'Пусконаладка') {
+            return 'Пусконаладочные работы';
+        } elseif ($process === 'Мобильная бригада') {
+            return 'Мобильная бригада';
+        }
+        return '';
+    }
+    
+    /**
+     * Determine ШМР sub-main category based on activity name
+     * Maps activities to their parent categories in the menu hierarchy
+     */
+    private function getSMRSubMainCategory(string $activity): string
+    {
+        // Подготовительные работы activities
+        $preparatoryWorks = ['Входной контроль', 'Завоз оборудования на площадку', 'Проверка монтажной площадки'];
+        if (in_array($activity, $preparatoryWorks)) {
+            return 'Подготовительные работы';
+        }
+        
+        // Монтаж блоков activities
+        $blockInstallation = ['Расстановка блоков'];
+        if (in_array($activity, $blockInstallation)) {
+            return 'Монтаж блоков';
+        }
+        
+        // Сборка здания activities
+        $buildingAssembly = ['Монтаж площадок обслуживания', 'Монтаж элементов укрытия', 'Сборка кровли'];
+        if (in_array($activity, $buildingAssembly)) {
+            return 'Сборка здания';
+        }
+        
+        // Внутриблочный монтаж - Технологическое оборудование activities
+        $techEquipment = ['Монтаж трубопроводов', 'Гидро/пневмо испытания', 'Монтаж технологического оборудования', 'Монтаж ЗРА', 'Протяжка соединений', 'Монтаж теплоизоляции'];
+        if (in_array($activity, $techEquipment)) {
+            return 'Внутриблочный монтаж';
+        }
+        
+        // Default to Внутриблочный монтаж for equipment-related activities with " - " separator
+        return 'Внутриблочный монтаж';
+    }
+    
+    /**
+     * Parse tabel entry message into structured report data
+     */
+    private function parseReportEntry(string $message, string $functionalDirection): array
+    {
+        // Initialize default values
+        $result = [
+            'project' => '',
+            'date' => '',
+            'process' => $functionalDirection,
+            'vid' => '',
+            'osnovnaya' => '',
+            'tip1' => '',
+            'tip2' => '',
+            'tip3' => '',
+            'tip4' => ''
+        ];
+        
+        // Try to parse project-based entry format:
+        // "<b>ФИО</b>\r\n✅Дата, Проект <b>КОД</b>: Добавлена запись в табель: <b>ОПИСАНИЕ</b>"
+        if (preg_match('/✅(\d{2}\.\d{2}\.\d{4}), Проект <b>(.*?)<\/b>: .*? <b>(.*?)<\/b>/', $message, $matches)) {
+            $result['date'] = $matches[1];
+            $result['project'] = $matches[2];
+            $description = $matches[3];
+        } 
+        // Try to parse INCIDENT format (Простой entries):
+        // "<b>ФИО</b>\r\n😨 ⚠️ Дата, Проект <b>КОД</b>: ИНЦИДЕНТ - Добавлена запись в табель: <b>ОПИСАНИЕ</b>"
+        elseif (preg_match('/😨 ⚠️ (\d{2}\.\d{2}\.\d{4}), Проект <b>(.*?)<\/b>: ИНЦИДЕНТ - Добавлена запись в табель: <b>.*?(Простой .*?)<\/b>/', $message, $matches)) {
+            $result['date'] = $matches[1];
+            $result['project'] = $matches[2];
+            $description = $matches[3];
+        } 
+        // Try to parse current activity format (Текущая деятельность):
+        // "✅Запись в табель от <b>ДД.ММ.ГГГГ</b>: Текущая деятельность (<b>ОПИСАНИЕ</b>) добавлена"
+        elseif (preg_match('/Запись в табель от <b>(\d{2}\.\d{2}\.\d{4})<\/b>: Текущая деятельность \(<b>(.*?)<\/b>\) добавлена/', $message, $matches)) {
+            $result['date'] = $matches[1];
+            $result['project'] = '';
+            $description = $matches[2];
+        }
+        // Try to parse old RK format:
+        // "✅ Запись в табель от <b>ДД.ММ.ГГГГ</b>, в проект <b>КОД</b> о <b>ОПИСАНИЕ добавлена</b>"
+        elseif (preg_match('/Запись в табель от <b>(\d{2}\.\d{2}\.\d{4})<\/b>, в проект <b>(.*?)<\/b> о <b>(.*?) добавлена<\/b>/', $message, $matches)) {
+            $result['date'] = $matches[1];
+            $result['project'] = $matches[2];
+            $description = $matches[3];
+        } else {
+            // Cannot parse - return defaults
+            return $result;
+        }
+        
+        // Parse description
+        $parsed = $this->parseDescription($description);
+        $main = $parsed['main'];
+        $subs = $parsed['subs'];
+        
+        $vid = $main;
+        $osnovnaya = '';
+        $tip1 = '';
+        $tip2 = '';
+        $tip3 = '';
+        $tip4 = '';
+        
+        // Logic based on main activity type
+        if (strpos($main, 'Прочее') !== false && isset($subs[0]) && $result['process'] === 'Пусконаладка') {
+            // ПНР Equipment "Prochee" with or without custom text:
+            // Format 1 (with comment): "Прочее (Электрооборудование, Дополнительные работы) (Настройка реле защиты)"
+            // Format 2 (no comment): "Прочее (Электрооборудование, Дополнительные работы)"
+            // Structure:
+            // Level 1: Пусконаладочные работы
+            // Level 2: Equipment type (e.g., Электрооборудование)
+            // Level 3: Activity category (e.g., Дополнительные работы)
+            // Level 4: Прочее
+            // Level 5: Custom text (if provided) or empty
+            
+            $osnovnaya = $this->getProcessActivity($result['process']);  // "Пусконаладочные работы"
+            $vid = $osnovnaya;
+            
+            // Parse first sub: "Equipment, Category" or just "Equipment"
+            $firstSub = $subs[0];
+            if (strpos($firstSub, ',') !== false) {
+                $parts = explode(',', $firstSub, 2);
+                $tip1 = trim($parts[0]);  // Equipment type
+                $tip2 = trim($parts[1]);  // Category (e.g., "Дополнительные работы")
+            } else {
+                $tip1 = $firstSub;  // Equipment type only
+                $tip2 = 'Дополнительные работы';  // EXPLICIT category for Прочее
+            }
+            
+            $tip3 = 'Прочее';           // Level 4: "Prochee"
+            $tip4 = $subs[1] ?? '';  // Level 5: Custom text (if provided)
+        } elseif ($main === 'Прочее') {
+            if (count($subs) >= 2) {
+                if ($subs[0] === 'Проектная деятельность') {
+                    $vid = $subs[1];
+                    $osnovnaya = $subs[0];
+                } else {
+                    $vid = $subs[1];
+                    $osnovnaya = $this->getProcessActivity($result['process']);
+                    $tip1 = $subs[0];
+                }
+                // Add additional sub levels
+                if (isset($subs[2])) {
+                    $tip2 = $subs[2];
+                }
+                if (isset($subs[3])) {
+                    $tip3 = $subs[3];
+                }
+                if (isset($subs[4])) {
+                    $tip4 = $subs[4];
+                }
+            }
+        } elseif ($main === 'Простой') {
+            $vid = '';
+            $osnovnaya = $main;
+            // Parse idle time structure: can be 2-level or 3-level
+            // 2-level: Простой (Category (Details)) - use process as tip1
+            // 3-level: Простой (Process) (Category (Details)) - use Process as tip1
+            
+            if (count($subs) === 1 && strpos($subs[0], '(') !== false) {
+                // Two-level structure: Простой (Category (Details))
+                // Use process name as tip1
+                $tip1 = $result['process'];
+                $subParsed = $this->parseDescription($subs[0]);
+                $tip2 = $subParsed['main'];
+                if (!empty($subParsed['subs'])) {
+                    $tip3 = $subParsed['subs'][0];
+                    if (isset($subParsed['subs'][1])) {
+                        $tip4 = $subParsed['subs'][1];
+                    }
+                }
+            } else {
+                // Three-level structure or simple one-level
+                if (count($subs) >= 1) {
+                    $tip1 = $subs[0]; // First reason (e.g., "Ожидание материалов")
+                }
+                if (count($subs) >= 2) {
+                    // Check if second sub has nested structure
+                    $subParsed = $this->parseDescription($subs[1]);
+                    $tip2 = $subParsed['main'];
+                    if (!empty($subParsed['subs'])) {
+                        $tip3 = $subParsed['subs'][0];
+                        if (isset($subParsed['subs'][1])) {
+                            $tip4 = $subParsed['subs'][1];
+                        }
+                    }
+                }
+                // Additional simple subs
+                if (count($subs) >= 3) {
+                    $tip3 = $subs[2];
+                }
+                if (count($subs) >= 4) {
+                    $tip4 = $subs[3];
+                }
+            }
+        } elseif (($main === 'Работы по графику' || $main === 'Подписание акта ШМР' || $main === 'Шеф-монтажные работы' || 
+                   $main === 'Работы неучтенные в ВОР' || strpos($main, 'Этап шеф-монтажа') === 0) && 
+                   $result['process'] === 'Шеф-монтаж') {
+            // ШМР activities ONLY - check process to avoid conflict with ПНР
+            // For ШМР activities, determine the structure based on subcategories
+            // Structure varies by activity type:
+            // Type 1 (with " - "): ШМР → Внутриблочный монтаж → Equipment → Activity → Action
+            // Type 2 (no " - "): ШМР → Category → Activity → Action
+            
+            $osnovnaya = $this->getProcessActivity($result['process']);  // "Шеф-монтажные работы"
+            
+            // Handle combined format with " - " separator: "Activity - Equipment"
+            if (isset($subs[0]) && strpos($subs[0], ' - ') !== false) {
+                // Type 1: Внутриблочный монтаж / Технологическое оборудование
+                // Example: "Подключение оборудования - Электрооборудование"
+                $parts = explode(' - ', $subs[0], 2);
+                $activityName = trim($parts[0]);  // e.g., "Подключение оборудования"
+                $equipmentType = trim($parts[1]); // e.g., "Электрооборудование"
+                
+                // Determine sub-main category
+                $tip1 = $this->getSMRSubMainCategory($activityName);  // Level 2: Внутриблочный монтаж
+                $tip2 = $equipmentType;                               // Level 3: Equipment type
+                $tip3 = $activityName;                                // Level 4: Activity type
+                $tip4 = $main;                                        // Level 5: Final action
+                $vid = $osnovnaya;
+            } else {
+                // Type 2: Other categories (Подготовительные работы, Монтаж блоков, Сборка здания)
+                // Example: "Входной контроль"
+                // UNIFIED STRUCTURE: Move final action to Level 5 for consistency
+                if (isset($subs[0])) {
+                    $activityName = $subs[0];
+                    $tip1 = $this->getSMRSubMainCategory($activityName);  // Level 2: Category
+                    $tip2 = $activityName;                                // Level 3: Activity
+                    $tip3 = '';                                            // Level 4: (empty - unified structure)
+                    $tip4 = $main;                                        // Level 5: Final action (MOVED HERE)
+                    $vid = $osnovnaya;
+                } else {
+                    // Fallback for edge cases
+                    $tip1 = '';
+                    $tip2 = '';
+                    $tip3 = '';
+                    $tip4 = $main;
+                    $vid = $osnovnaya;
+                }
+            }
+        } elseif ($main === 'Участие в ЗПИ' || 
+                   strpos($main, 'Разработка программы работ') !== false || 
+                   strpos($main, 'Разработка графика работ') !== false ||
+                   $main === 'Организация допоставки' ||
+                   $main === 'Участие в ОПИ' ||
+                   strpos($main, 'Исполнение обязанностей мастера') !== false ||
+                   strpos($main, 'Шеф-наладочные работы') !== false) {
+            // Проектная деятельность structure:
+            // Level 1: Проектная деятельность
+            // Level 2: Activity type (e.g., Разработка программы работ)
+            // Level 3-5: (empty)
+            $osnovnaya = 'Проектная деятельность';
+            $tip1 = $main;  // Level 2: Activity type
+            $tip2 = '';  // Level 3: (empty)
+            $tip3 = '';  // Level 4: (empty)
+            $tip4 = '';  // Level 5: (empty)
+            $vid = $osnovnaya;
+        } elseif (strpos($main, 'Медицинский осмотр') !== false || 
+                  strpos($main, 'Аттестация') !== false ||
+                  strpos($main, 'Подготовка ТКП') !== false || 
+                  strpos($main, 'Подготовка материала к ТКП') !== false ||
+                  strpos($main, 'Общая деятельность') !== false) {
+            // Текущая деятельность structure:
+            // Level 1: Текущая деятельность (main process)
+            // Level 2: Activity type (e.g., Медицинский осмотр, Подготовка ТКП)
+            // Level 3: Sub-type if exists (e.g., БН ОПНВГ for ТКП)
+            // Level 4: (empty)
+            // Level 5: (empty)
+            $osnovnaya = 'Текущая деятельность';
+            $vid = $osnovnaya;
+            
+            // Check for ТКП sub-types in parentheses
+            if (isset($subs[0])) {
+                // Format: "Подготовка ТКП (БН ОПНВГ)"
+                $tip1 = $main;     // Level 2: Main activity
+                $tip2 = $subs[0];  // Level 3: Sub-type
+                $tip3 = '';        // Level 4: (empty)
+                $tip4 = '';        // Level 5: (empty)
+            } else {
+                // Simple format: "Медицинский осмотр"
+                $tip1 = $main;     // Level 2: Activity
+                $tip2 = '';        // Level 3: (empty)
+                $tip3 = '';        // Level 4: (empty)
+                $tip4 = '';        // Level 5: (empty)
+            }
+        } elseif (strpos($main, 'Прочее') !== false && isset($subs[0]) && $result['process'] === 'Пусконаладка') {
+            // ПНР Equipment "Prochee" with or without custom text:
+            // Format 1 (with comment): "Прочее (Электрооборудование, Дополнительные работы) (Настройка реле защиты)"
+            // Format 2 (no comment): "Прочее (Электрооборудование, Дополнительные работы)"
+            // Structure:
+            // Level 1: Пусконаладочные работы
+            // Level 2: Equipment type (e.g., Электрооборудование)
+            // Level 3: Activity category (e.g., Дополнительные работы)
+            // Level 4: Прочее
+            // Level 5: Custom text (if provided) or empty
+            
+            $osnovnaya = $this->getProcessActivity($result['process']);  // "Пусконаладочные работы"
+            $vid = $osnovnaya;
+            
+            // Parse first sub: "Equipment, Category" or just "Equipment"
+            $firstSub = $subs[0];
+            if (strpos($firstSub, ',') !== false) {
+                $parts = explode(',', $firstSub, 2);
+                $tip1 = trim($parts[0]);  // Equipment type
+                $tip2 = trim($parts[1]);  // Category (e.g., "Дополнительные работы")
+            } else {
+                $tip1 = $firstSub;  // Equipment type only
+                $tip2 = 'Дополнительные работы';  // EXPLICIT category for Прочее
+            }
+            
+            $tip3 = 'Прочее';           // Level 4: "Prochee"
+            $tip4 = $subs[1] ?? '';  // Level 5: Custom text (if provided)
+        } elseif (in_array($main, ['Изменение схемы подключения', 'Прокладка кабеля', 'Подключение кабеля',
+                          'Монтаж оборудования', 'Монтаж оборудования АСУ ТП', 'Удаленный ПНР ПО',
+                          'Изменение конфигурации СИ', 'Калибровка/поверка оборудования', 'КМХ СИ', 'Коррекция характеристик СИ',
+                          'Демонтаж/ревизия арматуры', 'Демонтаж/ревизия техн. оборудования']) && isset($subs[0]) && $result['process'] === 'Пусконаладка') {
+            // ПНР Equipment specific activities (Dop. works sub-activities):
+            // Format: "Изменение схемы подключения (Электрооборудование, Дополнительные работы)"
+            // Structure:
+            // Level 1: Пусконаладочные работы
+            // Level 2: Equipment type (e.g., Электрооборудование)
+            // Level 3: Дополнительные работы (ALWAYS for these activities)
+            // Level 4: Specific activity (e.g., Изменение схемы подключения)
+            // Level 5: (empty)
+            
+            $osnovnaya = $this->getProcessActivity($result['process']);  // "Пусконаладочные работы"
+            $vid = $osnovnaya;
+            
+            // Parse first sub: "Equipment, Category" or just "Equipment"
+            $firstSub = $subs[0];
+            if (strpos($firstSub, ',') !== false) {
+                $parts = explode(',', $firstSub, 2);
+                $tip1 = trim($parts[0]);  // Equipment type
+                $tip2 = trim($parts[1]);  // Category (should be "Дополнительные работы")
+                $tip3 = $main;            // Level 4: Specific activity
+                $tip4 = '';                // Level 5: (empty)
+            } else {
+                // No category in sub, but these activities are ALWAYS under "Дополнительные работы"
+                $tip1 = $firstSub;                        // Equipment type only
+                $tip2 = 'Дополнительные работы';  // Level 3: EXPLICIT category
+                $tip3 = $main;                            // Level 4: Specific activity
+                $tip4 = '';                                // Level 5: (empty)
+            }
+        } elseif ($main === 'Работы по гарантии' || strpos($main, 'Устранени') === 0) {
+            // Handle: "Работы по гарантии (Электрооборудование)"
+            // Handle: "Устранения замечаний РК (Раздел ТХ)"
+            // Handle: "Устранение замечаний РК (Шеф-монтаж)"
+            $vid = $main;
+            $osnovnaya = $main;
+            $tip1 = $subs[0] ?? '';
+            // Check for nested details
+            if (isset($subs[1])) {
+                $tip2 = $subs[1];
+            }
+            if (isset($subs[2])) {
+                $tip3 = $subs[2];
+            }
+            if (isset($subs[3])) {
+                $tip4 = $subs[3];
+            }
+        } elseif (in_array($main, ['Работы по графику', 'Формирование ИД']) && isset($subs[0]) && $result['process'] === 'Пусконаладка') {
+            // ПНР Equipment activities - IMPORTANT: check process to avoid conflict with ШМР
+            // Format: "Работы по графику (Электрооборудование)"
+            // Structure:
+            // Level 1: Пусконаладочные работы
+            // Level 2: Equipment type (e.g., Электрооборудование)
+            // Level 3: (empty)
+            // Level 4: (empty)
+            // Level 5: Final action (e.g., Работы по графику)
+            
+            $osnovnaya = $this->getProcessActivity($result['process']);  // "Пусконаладочные работы"
+            $vid = $osnovnaya;
+            
+            // Parse first sub: "Equipment, Category" or just "Equipment"
+            $firstSub = $subs[0];
+            if (strpos($firstSub, ',') !== false) {
+                $parts = explode(',', $firstSub, 2);
+                $tip1 = trim($parts[0]);  // Equipment type
+                $tip2 = trim($parts[1]);  // Category (e.g., "Дополнительные работы")
+                $tip3 = '';                // Level 4: (empty for uniformity)
+                $tip4 = $main;            // Level 5: Final action
+            } else {
+                $tip1 = $firstSub;        // Equipment type only
+                $tip2 = '';                // Level 3: (empty)
+                $tip3 = '';                // Level 4: (empty)
+                $tip4 = $main;            // Level 5: Final action
+            }
+        } elseif (in_array($main, ['Комплексное опробование', 'Режимная наладка', 'Подготовка к служебной поездке',
+                          'Дорога', 'Инструктаж', 'Сдача авансового отчета']) && $result['process'] === 'Пусконаладка') {
+            // ПНР Simple activities (no equipment) - format: "Комплексное опробование"
+            // Structure:
+            // Level 1: Пусконаладочные работы
+            // Level 2: (empty)
+            // Level 3: (empty)
+            // Level 4: (empty)
+            // Level 5: Activity name (e.g., Комплексное опробование)
+            
+            $osnovnaya = $this->getProcessActivity($result['process']);  // "Пусконаладочные работы"
+            $vid = $osnovnaya;
+            $tip1 = '';  // Level 2: (empty)
+            $tip2 = '';  // Level 3: (empty)
+            $tip3 = '';  // Level 4: (empty)
+            $tip4 = $main;  // Level 5: Activity
+        } elseif (in_array($main, ['Подтвердить достижение вехи']) && isset($subs[0]) && $result['process'] === 'Пусконаладка') {
+            // ПНР Milestone confirmation - separate from ШМР
+            $osnovnaya = $this->getProcessActivity($result['process']);
+            $vid = $osnovnaya;
+            $tip1 = $subs[0];  // Equipment type
+            $tip2 = '';
+            $tip3 = '';
+            $tip4 = $main;     // Final action
+        } elseif ($main === 'Пусконаладочные работы' && isset($subs[0]) && $result['process'] === 'Пусконаладка') {
+            // Handle generic "Пусконаладочные работы" entries with equipment details
+            // Format: "Пусконаладочные работы (Электрооборудование, Дополнительные работы)"
+            // Structure:
+            // Level 1: Пусконаладочные работы
+            // Level 2: Equipment type (e.g., Электрооборудование)
+            // Level 3: Category (e.g., Дополнительные работы)
+            // Level 4: (empty)
+            // Level 5: (empty)
+            
+            $osnovnaya = $main;  // "Пусконаладочные работы"
+            $vid = $osnovnaya;
+            
+            // Parse first sub: "Equipment, Category" or just "Equipment"
+            $firstSub = $subs[0];
+            if (strpos($firstSub, ',') !== false) {
+                $parts = explode(',', $firstSub, 2);
+                $tip1 = trim($parts[0]);  // Equipment type
+                $tip2 = trim($parts[1]);  // Category
+                $tip3 = '';                // Level 4: (empty)
+                $tip4 = '';                // Level 5: (empty)
+            } else {
+                $tip1 = $firstSub;        // Equipment type only
+                $tip2 = '';                // Level 3: (empty)
+                $tip3 = '';                // Level 4: (empty)
+                $tip4 = '';                // Level 5: (empty)
+            }
+        } elseif (empty($subs)) {
+            // No subcategories - main is the activity itself
+            // This handles: "Общая деятельность", "Шеф-монтажные работы добавлена", etc.
+            $vid = $main;
+            $osnovnaya = $main;
+            $tip1 = '';  // Level 2: (empty)
+            $tip2 = '';  // Level 3: (empty)
+            $tip3 = '';  // Level 4: (empty)
+            $tip4 = '';  // Level 5: (empty)
+            
+            // Special handling for "Шеф-монтажные работы" without details
+            if ($main === 'Шеф-монтажные работы') {
+                $osnovnaya = $main;
+            }
+        } else {
+            // Default logic based on process
+            if ($result['process'] === 'Мобильная бригада') {
+                // Mobile brigade: main activity is the primary work type
+                // Example: "Электромонтажные работы (Досборка)"
+                $osnovnaya = $main;       // Основной вид работ
+                $tip1 = $subs[0] ?? '';   // Подтип работ
+                $tip2 = $subs[1] ?? '';   // Детали
+                $tip3 = $subs[2] ?? '';   // Примечание
+                $tip4 = $subs[3] ?? '';   // Дополнительные детали
+            } else {
+                // Other processes (PNR, SMR, etc.)
+                // IMPORTANT: Check if first sub contains comma-separated values (Equipment, Category)
+                $osnovnaya = $main;       // Основной вид работ
+                
+                // Try to split first sub by comma if it exists
+                if (isset($subs[0]) && strpos($subs[0], ',') !== false) {
+                    $parts = explode(',', $subs[0], 2);
+                    $tip1 = trim($parts[0]);  // Equipment type
+                    $tip2 = trim($parts[1]);  // Category
+                    $tip3 = $subs[1] ?? '';   // Примечание
+                    $tip4 = $subs[2] ?? '';   // Дополнительные детали
+                } else {
+                    $tip1 = $subs[0] ?? '';   // Подтип работ
+                    $tip2 = $subs[1] ?? '';   // Детали
+                    $tip3 = $subs[2] ?? '';   // Примечание
+                    $tip4 = $subs[3] ?? '';   // Дополнительные детали
+                }
+            }
+        }
+        
+        $result['vid'] = $vid;
+        $result['osnovnaya'] = $osnovnaya;
+        $result['tip1'] = $tip1;
+        $result['tip2'] = $tip2;
+        $result['tip3'] = $tip3;
+        $result['tip4'] = $tip4;
+        
+        return $result;
+    }
+    
+    /**
+     * Create CSV file for simple report
+     */
+    private function createSimpleReportCsv(string $startDate, string $endDate, string $fn, array $entries): string
+    {
+        $uploadsDir = __DIR__ . '/../../Uploads';
+        if (!is_dir($uploadsDir)) {
+            mkdir($uploadsDir, 0755, true);
+        }
+        
+        $timestamp = date('Y-m-d_H-i-s');
+        $fnSafe = ($fn === 'all') ? 'all' : preg_replace('/[^a-zA-Z0-9_-]/', '_', $fn);
+        $fileName = "simple_report_{$fnSafe}_{$timestamp}.csv";
+        $filePath = $uploadsDir . '/' . $fileName;
+        
+        $output = fopen($filePath, 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fprintf($output, "\xEF\xBB\xBF");
+        
+        // Write header - UNIFIED FORMAT matching menu structure
+        fputcsv($output, ['Проект', 'Дата', 'Процесс (ФН)', 'Уровень 1', 'Уровень 2', 'Уровень 3', 'Уровень 4', 'Уровень 5', 'Фамилия']);
+        
+        // Write data
+        foreach ($entries as $entry) {
+            // Skip milestone entries (вехи)
+            if ($this->isMilestoneEntry($entry['message'])) {
+                continue;
+            }
+            
+            $parsed = $this->parseReportEntry($entry['message'], $entry['fn']);
+            // NEW ORDER: Project, Date, Process, Level 1, Level 2, Level 3, Level 4, Level 5, Name
+            fputcsv($output, [
+                $parsed['project'],
+                $parsed['date'],
+                $parsed['process'],
+                $parsed['osnovnaya'],  // Уровень 1
+                $parsed['tip1'],        // Уровень 2
+                $parsed['tip2'],        // Уровень 3
+                $parsed['tip3'],        // Уровень 4
+                $parsed['tip4'] ?? '',  // Уровень 5 (если есть)
+                $entry['fio']
+            ]);
+        }
+        
+        fclose($output);
+        
+        return $fileName;
+    }
+    
+    /**
+     * Create CSV file for filtered report
+     */
+    private function createFilteredReportCsv(string $startDate, string $endDate, string $filterType, array $entries): string
+    {
+        $uploadsDir = __DIR__ . '/../../Uploads';
+        if (!is_dir($uploadsDir)) {
+            mkdir($uploadsDir, 0755, true);
+        }
+        
+        $timestamp = date('Y-m-d_H-i-s');
+        $fileName = "filtered_report_{$filterType}_{$timestamp}.csv";
+        $filePath = $uploadsDir . '/' . $fileName;
+        
+        $output = fopen($filePath, 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fprintf($output, "\xEF\xBB\xBF");
+        
+        // Write header - UNIFIED FORMAT matching menu structure
+        fputcsv($output, ['Проект', 'Дата', 'Процесс (ФН)', 'Уровень 1', 'Уровень 2', 'Уровень 3', 'Уровень 4', 'Уровень 5', 'Фамилия']);
+        
+        // Write data
+        foreach ($entries as $entry) {
+            // Skip milestone entries (вехи)
+            if ($this->isMilestoneEntry($entry['message'])) {
+                continue;
+            }
+            
+            $parsed = $this->parseReportEntry($entry['message'], $entry['fn']);
+            // NEW ORDER: Project, Date, Process, Level 1, Level 2, Level 3, Level 4, Level 5, Name
+            fputcsv($output, [
+                $parsed['project'],
+                $parsed['date'],
+                $parsed['process'],
+                $parsed['osnovnaya'],  // Уровень 1
+                $parsed['tip1'],        // Уровень 2
+                $parsed['tip2'],        // Уровень 3
+                $parsed['tip3'],        // Уровень 4
+                $parsed['tip4'] ?? '',  // Уровень 5 (если есть)
+                $entry['fio']
+            ]);
+        }
+        
+        fclose($output);
+        
+        return $fileName;
+    }
+    
+    /**
+     * Check if a message entry is a milestone (веха) entry
+     * Milestone entries should be excluded from CSV reports
+     */
+    private function isMilestoneEntry(string $message): bool
+    {
+        // Milestone patterns to detect:
+        // 1. "✅ Этап шеф-монтажа завершен" (ШМР milestones)
+        // 2. "✅ Этап наладки завершен" (ПНР milestones)
+        // 3. "✅ Подтвердить достижение вехи" (general milestone confirmations)
+        $milestonePatterns = [
+            '/Этап шеф-монтажа завершен/u',
+            '/Этап наладки завершен/u',
+            '/Подтвердить достижение вехи/u'
+        ];
+        
+        foreach ($milestonePatterns as $pattern) {
+            if (preg_match($pattern, $message)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Check export permission and handle export key verification
+     */
+    private function checkExportPermission(string $chatId, int $userId, $conversation, string $exportType = 'notes'): ?ServerResponse
+    {
+        // Check 1: Can user export?
+        if (!$this->exportSecurityService->canUserExport($userId)) {
+            $message = $this->exportSecurityService->getExportPermissionMessage($userId);
+            return $this->messageService->sendMessage($chatId, $message);
+        }
+        
+        // Check 2: Does user have export key?
+        if (!$this->exportSecurityService->hasExportKey($userId)) {
+            $text = "⚠️ <b>Кодовое слово не установлено</b>\n\n";
+            $text .= "Установите кодовое слово в профиле для выгрузки данных.\n\n";
+            $text .= "Профиль → 🔐 Кодовое слово";
+            
+            $keyboard = [
+                [['text' => '🔐 Установить сейчас', 'callback_data' => 'export_key_setup']],
+                [['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты']]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Check 3: Prompt for export key verification
+        $conversation->notes['awaiting_export_key_verify'] = true;
+        $conversation->notes['export_pending_type'] = $exportType;
+        $conversation->update();
+        
+        $text = "🔐 <b>Введите кодовое слово</b>\n\nДля безопасности введите ваше кодовое слово:";
+        return $this->messageService->sendMessage($chatId, $text);
+    }
+    
+    /**
+     * Send ZIP file to user (for password-protected exports)
+     */
+    private function sendZipFile(string $chatId, string $fileName, string $caption = '📦 Защищённая выгрузка'): bool
+    {
+        $filePath = __DIR__ . '/../../Uploads/' . $fileName;
+        
+        if (!file_exists($filePath)) {
+            error_log("ProjectHandler: ZIP file not found: {$filePath}");
+            return false;
+        }
+        
+        try {
+            $result = \Longman\TelegramBot\Request::sendDocument([
+                'chat_id' => $chatId,
+                'document' => \Longman\TelegramBot\Request::encodeFile($filePath),
+                'caption' => $caption
+            ]);
+            
+            // Clean up file after sending
+            if ($result->isOk()) {
+                unlink($filePath);
+            }
+            
+            return $result->isOk();
+        } catch (\Exception $e) {
+            error_log("ProjectHandler: Error sending ZIP file: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    // ========================================
+    // NOTES EXPORT METHODS
+    // ========================================
+    
+    /**
+     * Show notes export type selection menu
+     */
+    private function showNotesExportTypeMenu(string $chatId, int $userId): ServerResponse
+    {
+        $text = "📌 <b>Выгрузка заметок</b>\n\nВыберите тип выгрузки:";
+        
+        $keyboard = [
+            [
+                ['text' => '📋 Общий журнал заметок', 'callback_data' => 'proj_notes_type_all']
+            ],
+            [
+                ['text' => '📁 Заметки по проекту', 'callback_data' => 'proj_notes_type_byproject']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show project selection menu for notes export
+     */
+    private function showNotesExportProjectMenu(string $chatId, int $userId): ServerResponse
+    {
+        // Get all projects
+        $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector(
+            $this->databaseService
+        );
+        $allProjects = $projectSelector->getAllProjectsIncludingPending();
+        
+        // Apply intelligent sorting
+        $allProjects = $this->databaseService->sortProjectsIntelligently($allProjects);
+        
+        if (empty($allProjects)) {
+            $text = '⚠️ <b>Нет доступных проектов</b>';
+            $keyboard = [[
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_report_notes']
+            ]];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        $text = "📁 <b>Заметки по проекту</b>\n\nВыберите проект:";
+        
+        $keyboard = [];
+        foreach ($allProjects as $projectCode) {
+            $keyboard[] = [[
+                'text' => $projectCode,
+                'callback_data' => "proj_notes_project_{$projectCode}"
+            ]];
+        }
+        
+        // Add back button
+        $keyboard[] = [[
+            'text' => '⬅️ Назад',
+            'callback_data' => 'proj_report_notes'
+        ]];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show status filter menu for notes export
+     */
+    private function showNotesExportStatusFilterMenu(string $chatId, int $userId, ?string $projectCode, $conversation): ServerResponse
+    {
+        if ($projectCode) {
+            $text = "📁 <b>Заметки по проекту: {$projectCode}</b>\n\nВыберите фильтр по статусу:";
+            $backCallback = "proj_notes_type_byproject";
+        } else {
+            $text = "📋 <b>Общий журнал заметок</b>\n\nВыберите фильтр по статусу:";
+            $backCallback = "proj_report_notes";
+        }
+        
+        $projectParam = $projectCode ?? 'all';
+        
+        $keyboard = [
+            [
+                ['text' => '✅ Активные', 'callback_data' => "proj_notes_generate_active_{$projectParam}"]
+            ],
+            [
+                ['text' => '❌ Закрытые', 'callback_data' => "proj_notes_generate_closed_{$projectParam}"]
+            ],
+            [
+                ['text' => '📊 Все', 'callback_data' => "proj_notes_generate_all_{$projectParam}"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => $backCallback]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show date range selection for notes export
+     */
+    private function showNotesExportDateRangeMenu(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter): ServerResponse
+    {
+        // Save status filter to conversation
+        $conversation->notes['notes_export_status_filter'] = $statusFilter;
+        $conversation->notes['notes_export_project_code'] = $projectCode;
+        $conversation->update();
+        
+        if ($projectCode && $projectCode !== 'all') {
+            $text = "📁 <b>Заметки по проекту: {$projectCode}</b>\n";
+        } else {
+            $text = "📋 <b>Общий журнал заметок</b>\n";
+        }
+        
+        $statusText = [
+            'active' => '✅ Активные',
+            'closed' => '❌ Закрытые',
+            'all' => '📊 Все'
+        ][$statusFilter];
+        
+        $text .= "Фильтр: {$statusText}\n\nВыберите период:";
+        
+        $projectParam = $projectCode ?? 'all';
+        
+        $keyboard = [
+            [
+                ['text' => '📅 Сегодня', 'callback_data' => "proj_notes_period_{$statusFilter}_{$projectParam}_today"]
+            ],
+            [
+                ['text' => '📅 Вчера', 'callback_data' => "proj_notes_period_{$statusFilter}_{$projectParam}_yesterday"]
+            ],
+            [
+                ['text' => '📅 Последние 7 дней', 'callback_data' => "proj_notes_period_{$statusFilter}_{$projectParam}_week"]
+            ],
+            [
+                ['text' => '📅 Последние 30 дней', 'callback_data' => "proj_notes_period_{$statusFilter}_{$projectParam}_month"]
+            ],
+            [
+                ['text' => '📅 Весь период', 'callback_data' => "proj_notes_period_{$statusFilter}_{$projectParam}_all"]
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => "proj_notes_filter_back_{$projectParam}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show start date selection for notes export custom period
+     */
+    private function showNotesExportStartDateMenu(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter): ServerResponse
+    {
+        if ($projectCode) {
+            $text = "📁 <b>Заметки по проекту: {$projectCode}</b>\n\n";
+        } else {
+            $text = "📋 <b>Общий журнал заметок</b>\n\n";
+        }
+        
+        $text .= "Введите <b>дату начала</b> в формате ДД.ММ.ГГГГ\n\nПример: 01.10.2025";
+        
+        // Set conversation state
+        $conversation->notes['awaiting_notes_export_start_date'] = true;
+        $conversation->notes['notes_export_project_code'] = $projectCode;
+        $conversation->notes['notes_export_status_filter'] = $statusFilter;
+        $conversation->update();
+        
+        $projectParam = $projectCode ?? 'all';
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => "proj_notes_filter_{$statusFilter}_{$projectParam}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show end date selection for notes export custom period
+     */
+    private function showNotesExportEndDateMenu(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter, string $startDate): ServerResponse
+    {
+        if ($projectCode) {
+            $text = "📁 <b>Заметки по проекту: {$projectCode}</b>\n";
+        } else {
+            $text = "📋 <b>Общий журнал заметок</b>\n";
+        }
+        
+        $text .= "Дата начала: {$startDate}\n\nВведите <b>дату окончания</b> в формате ДД.ММ.ГГГГ\n\nПример: 13.10.2025";
+        
+        // Set conversation state
+        $conversation->notes['notes_export_start_date'] = $startDate;
+        $conversation->notes['awaiting_notes_export_end_date'] = true;
+        $conversation->notes['awaiting_notes_export_start_date'] = false;
+        $conversation->update();
+        
+        $projectParam = $projectCode ?? 'all';
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Отмена', 'callback_data' => "proj_notes_filter_{$statusFilter}_{$projectParam}"]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle notes export custom date input (called from GenericmessageCommand)
+     */
+    public function handleNotesExportDateInput(string $chatId, int $userId, string $userInput, $conversation): ?ServerResponse
+    {
+        $projectCode = $conversation->notes['notes_export_project_code'] ?? null;
+        $statusFilter = $conversation->notes['notes_export_status_filter'] ?? 'all';
+        
+        // Check if we're waiting for start date
+        if (isset($conversation->notes['awaiting_notes_export_start_date']) && $conversation->notes['awaiting_notes_export_start_date']) {
+            // Validate date format
+            if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $userInput)) {
+                $text = '⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 01.10.2025)';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            // Validate date
+            $dateParts = explode('.', $userInput);
+            if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+                $text = '⚠️ Некорректная дата. Проверьте введённые данные.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            return $this->showNotesExportEndDateMenu($chatId, $userId, $conversation, $projectCode, $statusFilter, $userInput);
+        }
+        
+        // Check if we're waiting for end date
+        if (isset($conversation->notes['awaiting_notes_export_end_date']) && $conversation->notes['awaiting_notes_export_end_date']) {
+            // Validate date format
+            if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $userInput)) {
+                $text = '⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 13.10.2025)';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            // Validate date
+            $dateParts = explode('.', $userInput);
+            if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+                $text = '⚠️ Некорректная дата. Проверьте введённые данные.';
+                return $this->messageService->sendMessage($chatId, $text);
+            }
+            
+            $startDate = $conversation->notes['notes_export_start_date'];
+            
+            // Clear conversation state
+            $conversation->notes['awaiting_notes_export_end_date'] = false;
+            $conversation->notes['awaiting_notes_export_start_date'] = false;
+            $conversation->update();
+            
+            // Generate notes export with custom date range
+            return $this->generateNotesExportCustom($chatId, $userId, $conversation, $projectCode, $statusFilter, $startDate, $userInput);
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Generate notes export for all period (no date filtering)
+     */
+    private function generateNotesExportAll(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter): ServerResponse
+    {
+        // Check export permission
+        $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
+        if ($permissionCheck !== null) {
+            return $permissionCheck;
+        }
+        
+        // Get all notes without date filtering
+        $notes = $this->getProjectNotes($projectCode, null, date('Y-m-d 23:59:59'), $statusFilter);
+        
+        if (empty($notes)) {
+            if ($projectCode) {
+                $text = "⚠️ <b>Нет данных</b>\n\nНет заметок по проекту {$projectCode}.";
+            } else {
+                $text = "⚠️ <b>Нет данных</b>\n\nВ системе нет заметок.";
+            }
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file
+        $fileName = $this->createNotesExportCsv($projectCode, $notes, 'all', $statusFilter);
+        
+        // Send status message
+        $statusText = [
+            'active' => '✅ Активные',
+            'closed' => '❌ Закрытые',
+            'all' => '📊 Все'
+        ][$statusFilter];
+        
+        if ($projectCode) {
+            $text = "✅ <b>Выгрузка заметок сформирована</b>\n\n📁 Проект: {$projectCode}\n📋 Фильтр: {$statusText}\n📌 Заметок: " . count($notes);
+        } else {
+            $text = "✅ <b>Выгрузка заметок сформирована</b>\n\n📋 Общий журнал\n📋 Фильтр: {$statusText}\n📌 Заметок: " . count($notes);
+        }
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send CSV file with notes caption
+        $this->sendCsvFile($chatId, $fileName, '📌 Журнал заметок');
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        return $this->messageService->sendMessage($chatId, '👆 Файл выше', $keyboard);
+    }
+    
+    /**
+     * Generate notes export for predefined period
+     */
+    private function generateNotesExport(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter, string $period): ServerResponse
+    {
+        // Check export permission
+        $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
+        if ($permissionCheck !== null) {
+            return $permissionCheck;
+        }
+        
+        // Calculate date range based on period
+        $endDate = date('Y-m-d 23:59:59');
+        switch ($period) {
+            case 'today':
+                $startDate = date('Y-m-d 00:00:00');
+                $periodText = 'Сегодня';
+                break;
+            case 'yesterday':
+                $startDate = date('Y-m-d 00:00:00', strtotime('-1 day'));
+                $endDate = date('Y-m-d 23:59:59', strtotime('-1 day'));
+                $periodText = 'Вчера';
+                break;
+            case 'week':
+                $startDate = date('Y-m-d 00:00:00', strtotime('-7 days'));
+                $periodText = 'Последние 7 дней';
+                break;
+            case 'month':
+                $startDate = date('Y-m-d 00:00:00', strtotime('-30 days'));
+                $periodText = 'Последние 30 дней';
+                break;
+            case 'all':
+                $startDate = null;
+                $periodText = 'Весь период';
+                break;
+            default:
+                $startDate = date('Y-m-d 00:00:00');
+                $periodText = 'Сегодня';
+        }
+        
+        // Get notes from database
+        $notes = $this->getProjectNotes($projectCode, $startDate, $endDate, $statusFilter);
+        
+        if (empty($notes)) {
+            if ($projectCode) {
+                $text = "⚠️ <b>Нет данных</b>\n\nЗа период ({$periodText}) нет заметок по проекту {$projectCode}.";
+            } else {
+                $text = "⚠️ <b>Нет данных</b>\n\nЗа период ({$periodText}) нет заметок.";
+            }
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file
+        $fileName = $this->createNotesExportCsv($projectCode, $notes, $period, $statusFilter);
+        
+        // Send status message
+        $statusText = [
+            'active' => '✅ Активные',
+            'closed' => '❌ Закрытые',
+            'all' => '📊 Все'
+        ][$statusFilter];
+        
+        if ($projectCode) {
+            $text = "✅ <b>Выгрузка заметок сформирована</b>\n\n📁 Проект: {$projectCode}\n📅 Период: {$periodText}\n📋 Фильтр: {$statusText}\n📌 Заметок: " . count($notes);
+        } else {
+            $text = "✅ <b>Выгрузка заметок сформирована</b>\n\n📋 Общий журнал\n📅 Период: {$periodText}\n📋 Фильтр: {$statusText}\n📌 Заметок: " . count($notes);
+        }
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send CSV file with notes caption
+        $this->sendCsvFile($chatId, $fileName, '📌 Журнал заметок');
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        return $this->messageService->sendMessage($chatId, '👆 Файл выше', $keyboard);
+    }
+    
+    /**
+     * Generate notes export for custom date range
+     */
+    private function generateNotesExportCustom(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter, string $startDate, string $endDate): ServerResponse
+    {
+        // Check export permission
+        $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
+        if ($permissionCheck !== null) {
+            return $permissionCheck;
+        }
+        
+        // Convert dates to SQL format
+        $startParts = explode('.', $startDate);
+        $endParts = explode('.', $endDate);
+        $startSql = "{$startParts[2]}-{$startParts[1]}-{$startParts[0]} 00:00:00";
+        $endSql = "{$endParts[2]}-{$endParts[1]}-{$endParts[0]} 23:59:59";
+        
+        // Get notes from database
+        $notes = $this->getProjectNotes($projectCode, $startSql, $endSql, $statusFilter);
+        
+        if (empty($notes)) {
+            if ($projectCode) {
+                $text = "⚠️ <b>Нет данных</b>\n\nЗа период с {$startDate} по {$endDate} нет заметок по проекту {$projectCode}.";
+            } else {
+                $text = "⚠️ <b>Нет данных</b>\n\nЗа период с {$startDate} по {$endDate} нет заметок.";
+            }
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+                ]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Create CSV file
+        $period = "{$startDate}_{$endDate}";
+        $fileName = $this->createNotesExportCsv($projectCode, $notes, $period, $statusFilter);
+        
+        // Send status message
+        $statusText = [
+            'active' => '✅ Активные',
+            'closed' => '❌ Закрытые',
+            'all' => '📊 Все'
+        ][$statusFilter];
+        
+        if ($projectCode) {
+            $text = "✅ <b>Выгрузка заметок сформирована</b>\n\n📁 Проект: {$projectCode}\n📅 Период: {$startDate} - {$endDate}\n📋 Фильтр: {$statusText}\n📌 Заметок: " . count($notes);
+        } else {
+            $text = "✅ <b>Выгрузка заметок сформирована</b>\n\n📋 Общий журнал\n📅 Период: {$startDate} - {$endDate}\n📋 Фильтр: {$statusText}\n📌 Заметок: " . count($notes);
+        }
+        $this->messageService->sendMessage($chatId, $text);
+        
+        // Send CSV file with notes caption
+        $this->sendCsvFile($chatId, $fileName, '📌 Журнал заметок');
+        
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_ОтчётПоПроекту']
+            ]
+        ];
+        return $this->messageService->sendMessage($chatId, '👆 Файл выше', $keyboard);
+    }
+    
+    /**
+     * Get project notes from database
+     */
+    private function getProjectNotes(?string $projectCode, ?string $startDate, string $endDate, string $statusFilter = 'all'): array
+    {
+        try {
+            // Use NotesService to get notes (it has PDO database access)
+            require_once __DIR__ . '/../Services/NotesService.php';
+            
+            // Create PDO connection with hardcoded credentials (same as other parts of the system)
+            // CRITICAL: Set charset to utf8mb4 AND execute SET NAMES to ensure proper encoding
+            $dsn = "mysql:host=82.146.42.213;dbname=tg_bot;charset=utf8mb4";
+            $pdo = new \PDO($dsn, 'WizardJIOCb', '7qQ#28051961');
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            
+            // CRITICAL FIX: Force UTF-8 encoding for connection
+            $pdo->exec("SET NAMES utf8mb4");
+            $pdo->exec("SET CHARACTER SET utf8mb4");
+            $pdo->exec("SET character_set_connection=utf8mb4");
+            
+            $notesService = new \Longman\TelegramBot\Commands\SystemCommands\Services\NotesService($pdo);
+            
+            // Get notes by project or all notes
+            if ($projectCode) {
+                // Get notes for specific project
+                if ($statusFilter === 'all') {
+                    $allNotes = $notesService->getNotesByProject($projectCode);
+                } else {
+                    $allNotes = $notesService->getNotesByProject($projectCode, $statusFilter);
+                }
+            } else {
+                // Get all notes (general journal)
+                if ($statusFilter === 'all') {
+                    $sql = "SELECT * FROM project_notes ORDER BY created_at DESC";
+                    $stmt = $pdo->query($sql);
+                } else {
+                    $sql = "SELECT * FROM project_notes WHERE status = :status ORDER BY created_at DESC";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([':status' => $statusFilter]);
+                }
+                $allNotes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+            }
+            
+            // Filter by date if specified
+            if ($startDate) {
+                $startTime = strtotime($startDate);
+                $endTime = strtotime($endDate);
+                
+                $allNotes = array_filter($allNotes, function($note) use ($startTime, $endTime) {
+                    $noteTime = strtotime($note['created_at']);
+                    return $noteTime >= $startTime && $noteTime <= $endTime;
+                });
+            }
+            
+            return array_values($allNotes);
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::getProjectNotes error: " . $e->getMessage());
+            return [];
+        }
+    }
+    
+    /**
+     * Create CSV file for notes export
+     */
+    private function createNotesExportCsv(?string $projectCode, array $notes, string $period, string $statusFilter = 'all'): string
+    {
+        $uploadsDir = __DIR__ . '/../../Uploads';
+        if (!is_dir($uploadsDir)) {
+            mkdir($uploadsDir, 0755, true);
+        }
+        
+        $timestamp = date('Y-m-d_H-i-s');
+        $periodSafe = preg_replace('/[^a-zA-Z0-9_-]/', '_', $period);
+        
+        if ($projectCode) {
+            $fileName = "notes_{$projectCode}_{$statusFilter}_{$periodSafe}_{$timestamp}.csv";
+        } else {
+            $fileName = "notes_all_{$statusFilter}_{$periodSafe}_{$timestamp}.csv";
+        }
+        
+        $filePath = $uploadsDir . '/' . $fileName;
+        
+        $output = fopen($filePath, 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fprintf($output, "\xEF\xBB\xBF");
+        
+        // Write header
+        fputcsv($output, ['№', 'Проект', 'Дата создания', 'Автор', 'Контекст', 'Этап', 'Текст заметки', 'Статус', 'Дата закрытия', 'Закрыл']);
+        
+        // Write data
+        foreach ($notes as $note) {
+            $status = $note['status'] === 'active' ? 'Активна' : 'Закрыта';
+            $closedAt = $note['closed_at'] ? date('d.m.Y H:i', strtotime($note['closed_at'])) : '';
+            $closedBy = $note['closed_by_fio'] ?? '';
+            
+            // After fix_notes_encoding.sql execution:
+            // Table has correct UTF-8 encoding, so no conversion needed
+            // Data comes from database in UTF-8 and goes to CSV as UTF-8
+            $row = [
+                $note['id'],
+                $note['project_id'],
+                date('d.m.Y H:i', strtotime($note['created_at'])),
+                $note['user_fio'],
+                $note['context_menu'],
+                $note['stage'],
+                $note['note_text'],
+                $status,
+                $closedAt,
+                $closedBy
+            ];
+            
+            fputcsv($output, $row);
+        }
+        
+        fclose($output);
+        
+        return $fileName;
+    }
+    
+    /**
+     * Show project cards menu
+     */
+    private function showProjectCardsMenu(string $chatId, int $userId): ServerResponse
+    {
+        $text = '🗂️ <b>Карточки проектов</b>
+
+Просмотр информации о проектах:';
+
+        $keyboard = [
+            [
+                ['text' => '📋 Список проектов', 'callback_data' => 'proj_card_list']
+            ],
+            [
+                ['text' => '➕ Добавить проект', 'callback_data' => 'proj_card_add']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Show list of projects for cards
+     */
+    private function showProjectCardsList(string $chatId, int $userId): ServerResponse
+    {
+        try {
+            // Get connection (mysqli)
+            $conn = $this->databaseService->getConnection();
+            
+            // Query for active projects
+            $query = "
+                SELECT DISTINCT code as project_code, name as project_name 
+                FROM project 
+                WHERE code IS NOT NULL AND code != '' AND is_active = 1
+                ORDER BY code
+            ";
+            
+            $result = $conn->query($query);
+            if (!$result) {
+                throw new \Exception("Database query failed: " . $conn->error);
+            }
+            
+            $projects = [];
+            while ($row = $result->fetch_assoc()) {
+                $projects[] = $row;
+            }
+            
+            if (empty($projects)) {
+                $text = '📋 <b>Список проектов</b>
+
+Проекты пока не созданы.';
+                
+                $keyboard = [
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_КарточкаПроекта']
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+            
+            $text = '📋 <b>Список проектов</b>
+
+Всего проектов: ' . count($projects) . '
+
+Выберите проект для просмотра карточки:';
+            
+            $keyboard = [];
+            foreach ($projects as $project) {
+                // If name equals code, show only code
+                $displayText = ($project['project_code'] === $project['project_name']) 
+                    ? '🗂️ ' . $project['project_code']
+                    : '🗂️ ' . $project['project_code'] . ' - ' . $project['project_name'];
+                    
+                $keyboard[] = [
+                    ['text' => $displayText, 
+                     'callback_data' => 'proj_card_view_' . $project['project_code']]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_КарточкаПроекта']
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showProjectCardsList error: " . $e->getMessage());
+            error_log("ProjectHandler::showProjectCardsList trace: " . $e->getTraceAsString());
+            return $this->messageService->sendMessage($chatId, 'Ошибка загрузки списка проектов: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * View project card details
+     */
+    private function viewProjectCard(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get project from project table
+            $stmt = $conn->prepare("SELECT code as project_code, name as project_name FROM project WHERE code = ? LIMIT 1");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $project = $result->fetch_assoc();
+            
+            if (!$project) {
+                return $this->messageService->sendMessage($chatId, 'Проект не найден');
+            }
+            
+            // Get additional data from project_cards if exists
+            $stmt = $conn->prepare("
+                SELECT pc.*, c.name as customer_name, bu.name as business_unit_name
+                FROM project_cards pc
+                LEFT JOIN customers c ON pc.customer_id = c.id
+                LEFT JOIN business_units bu ON pc.business_unit_id = bu.id
+                WHERE pc.project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardData = $result->fetch_assoc();
+            
+            // Get count of tabel entries for this project (excluding testers)
+            $stmt = $conn->prepare("
+                SELECT COUNT(*) as entry_count
+                FROM ozna_tabel ot
+                INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                WHERE ot.message LIKE CONCAT('%', ?, '%')
+                AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $tabelData = $result->fetch_assoc();
+            $entryCount = $tabelData['entry_count'] ?? 0;
+            
+            // Get SMR milestone confirmations and fact days from tabel
+            $smrMilestonesFact = [];
+            $smrMilestoneNames = [
+                'Входной контроль',
+                'Завоз оборудования',
+                'Расстановка блоков',
+                'Монтаж площадок',
+                'Монтаж элементов укрытия',
+                'Сборка кровли',
+                'Монтаж трубопроводов',
+                'Гидро/пневмо испытания',
+                'Монтаж теплоизоляции',
+                'Монтаж вентиляции',
+                'Монтаж снятого оборудования',
+                'Монтаж кабельной продукции'
+            ];
+            
+            foreach ($smrMilestoneNames as $name) {
+                // Count days by searching for milestone name in parentheses (excluding testers)
+                $stmt = $conn->prepare("
+                    SELECT COUNT(*) as days_count
+                    FROM ozna_tabel ot
+                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                    WHERE ot.message LIKE CONCAT('%', ?, '%', ?, '%')
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                ");
+                $stmt->bind_param('ss', $projectCode, $name);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $row = $result->fetch_assoc();
+                $smrMilestonesFact[$name] = $row['days_count'] ?? 0;
+            }
+            
+            // Get SMR additional work counts from tabel (excluding testers)
+            $stmt = $conn->prepare("
+                SELECT 
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%') THEN 1 ELSE 0 END) as downtime_smr,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Работы вне ВОР%') THEN 1 ELSE 0 END) as out_of_scope,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Досборка%') THEN 1 ELSE 0 END) as preassembly,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Устранени%', '%замечаний РК%')
+                         AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж' OR JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада')
+                         THEN 1 ELSE 0 END) as rk_comments_smr,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Работы по гарантии%') THEN 1 ELSE 0 END) as warranty_smr,
+                    SUM(CASE WHEN (ot.message LIKE '%🚗 Дорога%' OR ot.message LIKE '%📋 Инструктаж%' OR (ot.message LIKE '%Подготовка%' AND ot.message NOT LIKE '%Подготовка к служебной поездке%'))
+                         AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж' OR JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада')
+                         THEN 1 ELSE 0 END) as mobilization_smr,
+                    SUM(CASE WHEN (ot.message LIKE '%💰 Сдача авансового отчета%' 
+                         OR ot.message LIKE '%📋 Разработка графика работ%'
+                         OR ot.message LIKE '%📋 Разработка программы работ%'
+                         OR ot.message LIKE '%Подготовка к служебной поездке%')
+                         AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж' OR JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада')
+                         THEN 1 ELSE 0 END) as project_activity_smr,
+                    SUM(CASE WHEN ot.message LIKE '%Организация допоставки%'
+                         AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж' OR JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада')
+                         THEN 1 ELSE 0 END) as delivery_organization_smr
+                FROM ozna_tabel ot
+                INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                WHERE ot.message LIKE CONCAT('%', ?, '%')
+                AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+            ");
+            $stmt->bind_param('ssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $smrAdditional = $result->fetch_assoc();
+            
+            // Get PNR additional work counts from tabel (excluding testers)
+            $stmt = $conn->prepare("
+                SELECT 
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%') THEN 1 ELSE 0 END) as downtime_pnr,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Устранени%', '%замечаний РК%')
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as rk_comments_pnr,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Работы по гарантии%') THEN 1 ELSE 0 END) as warranty_pnr,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Реализация ТР%') THEN 1 ELSE 0 END) as additional_work,
+                    SUM(CASE WHEN (ot.message LIKE '%🚗 Дорога%' OR ot.message LIKE '%📋 Инструктаж%' OR (ot.message LIKE '%Подготовка%' AND ot.message NOT LIKE '%Подготовка к служебной поездке%'))
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as mobilization_pnr,
+                    SUM(CASE WHEN ot.message LIKE '%Дополнительные работы%'
+                         AND ot.message NOT LIKE '%Работы по графику%'
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as pnr_stage_additional_work,
+                    SUM(CASE WHEN (ot.message LIKE '%💰 Сдача авансового отчета%' 
+                         OR ot.message LIKE '%📋 Разработка графика работ%'
+                         OR ot.message LIKE '%📋 Разработка программы работ%'
+                         OR ot.message LIKE '%Подготовка к служебной поездке%')
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as project_activity_pnr,
+                    SUM(CASE WHEN ot.message LIKE '%Организация допоставки%'
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as delivery_organization_pnr
+                FROM ozna_tabel ot
+                INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                WHERE ot.message LIKE CONCAT('%', ?, '%')
+                AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+            ");
+            $stmt->bind_param('sssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $pnrAdditional = $result->fetch_assoc();
+            
+            // Get PNR milestone confirmations and fact days from tabel
+            $pnrMilestonesFact = [];
+            $pnrMilestoneNames = [
+                'Электрооборудование',
+                'Пожарная сигнализация',
+                'Охранная сигнализация',
+                'Автоматизация',
+                'Вентиляция и отопление',
+                'Технологическое оборудование',
+                'Метрология',
+                'Режимная наладка',
+                'Комплексное опробование'
+            ];
+            
+            foreach ($pnrMilestoneNames as $name) {
+                // For "Режимная наладка" and "Комплексное опробование" - count without "Работы по графику" filter
+                if ($name === 'Режимная наладка' || $name === 'Комплексное опробование') {
+                    $stmt = $conn->prepare("
+                        SELECT COUNT(*) as days_count
+                        FROM ozna_tabel ot
+                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                        WHERE ot.message LIKE CONCAT('%', ?, '%')
+                        AND ot.message LIKE CONCAT('%', ?, '%')
+                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                    ");
+                    $stmt->bind_param('ss', $projectCode, $name);
+                } else {
+                    // Count days by searching for "Работы по графику" + milestone name (excluding testers)
+                    $stmt = $conn->prepare("
+                        SELECT COUNT(*) as days_count
+                        FROM ozna_tabel ot
+                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                        WHERE ot.message LIKE CONCAT('%', ?, '%')
+                        AND ot.message LIKE '%Работы по графику%'
+                        AND ot.message LIKE CONCAT('%', ?, '%')
+                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                    ");
+                    $stmt->bind_param('ss', $projectCode, $name);
+                }
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $row = $result->fetch_assoc();
+                $pnrMilestonesFact[$name] = $row['days_count'] ?? 0;
+            }
+            
+            // Get SMR milestones from project_milestones
+            $smrMilestones = [];
+            if ($cardData) {
+                $stmt = $conn->prepare("
+                    SELECT milestone_name, planned_hours 
+                    FROM project_milestones 
+                    WHERE project_code = ? AND work_type = 'ШМР'
+                    ORDER BY order_index
+                ");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                while ($row = $result->fetch_assoc()) {
+                    $smrMilestones[] = $row;
+                }
+            }
+            
+            // Get PNR milestones from project_milestones
+            $pnrMilestones = [];
+            if ($cardData) {
+                $stmt = $conn->prepare("
+                    SELECT milestone_name, planned_hours 
+                    FROM project_milestones 
+                    WHERE project_code = ? AND work_type = 'ПНР'
+                    ORDER BY order_index
+                ");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                while ($row = $result->fetch_assoc()) {
+                    $pnrMilestones[] = $row;
+                }
+            }
+            
+            $text = '🗂️ <b>Карточка проекта</b>
+
+';
+            $text .= '<b>Шифр:</b> ' . $project['project_code'] . '
+';
+            $text .= '<b>Наименование:</b> ' . $project['project_name'] . '
+';
+            
+            $projectManager = ($cardData && $cardData['project_manager']) ? $cardData['project_manager'] : '-';
+            $text .= '<b>РП:</b> ' . $projectManager . '
+';
+            
+            $customerName = ($cardData && $cardData['customer_name']) ? $cardData['customer_name'] : '-';
+            $text .= '<b>Заказчик:</b> ' . $customerName . '
+';
+            
+            $businessUnit = ($cardData && $cardData['business_unit_name']) ? $cardData['business_unit_name'] : '-';
+            $text .= '<b>БН:</b> ' . $businessUnit . '
+';
+            
+            // SMR Section
+            $text .= '
+🔧 <b>ШМР (Шеф-монтажные работы)</b>
+';
+            $smrPlan = ($cardData && $cardData['smr_planned_hours']) ? $cardData['smr_planned_hours'] : 0;
+            $text .= '📊 План: ' . $smrPlan . ' дн.
+';
+            
+            // Standard SMR milestones (always the same for all projects)
+            if (!empty($smrMilestones)) {
+                $text .= '
+<b>Вехи:</b>
+';
+                foreach ($smrMilestones as $idx => $milestone) {
+                    $num = $idx + 1;
+                    $milestoneName = $milestone['milestone_name'];
+                    $fact = $smrMilestonesFact[$milestoneName] ?? 0;
+                    $plan = $milestone['planned_hours'] ?? 0;
+                    $text .= "  {$num}. {$milestoneName} (План: {$plan} дн. | Факт: {$fact} дн.)
+";
+                }
+            } else {
+                // Show standard milestones from process structure
+                $text .= '
+<b>Вехи:</b>
+';
+                $standardMilestones = [
+                    'Входной контроль',
+                    'Завоз оборудования',
+                    'Расстановка блоков',
+                    'Монтаж площадок',
+                    'Монтаж элементов укрытия',
+                    'Сборка кровли',
+                    'Монтаж трубопроводов',
+                    'Гидро/пневмо испытания',
+                    'Монтаж теплоизоляции',
+                    'Монтаж вентиляции',
+                    'Монтаж снятого оборудования',
+                    'Монтаж кабельной продукции'
+                ];
+                foreach ($standardMilestones as $idx => $milestoneName) {
+                    $num = $idx + 1;
+                    $fact = $smrMilestonesFact[$milestoneName] ?? 0;
+                    $text .= "  {$num}. {$milestoneName} (План: 0 дн. | Факт: {$fact} дн.)
+";
+                }
+            }
+            
+            // SMR Project Activity Section (without numbering)
+            $text .= '
+💼 <b>Проектная деятельность:</b> ' . ($smrAdditional['project_activity_smr'] ?? 0) . ' дн.
+';
+            
+            // SMR Additional Work Section
+            $text .= '
+📋 <b>Дополнительные работы:</b>
+';
+            $text .= '  • Простои: ' . ($smrAdditional['downtime_smr'] ?? 0) . ' дн.
+';
+            $text .= '  • Работы вне ВОР: ' . ($smrAdditional['out_of_scope'] ?? 0) . ' дн.
+';
+            $text .= '  • Досборка: ' . ($smrAdditional['preassembly'] ?? 0) . ' дн.
+';
+            $text .= '  • Устранение замечаний РК: ' . ($smrAdditional['rk_comments_smr'] ?? 0) . ' дн.
+';
+            $text .= '  • Гарантийные работы: ' . ($smrAdditional['warranty_smr'] ?? 0) . ' дн.
+';
+            $text .= '  • Мобилизационные мероприятия: ' . ($smrAdditional['mobilization_smr'] ?? 0) . ' дн.
+';
+            $text .= '  • Проектная деятельность: ' . ($smrAdditional['delivery_organization_smr'] ?? 0) . ' дн.
+';
+            
+            // PNR Section
+            $text .= '
+⚙️ <b>ПНР (Пуско-наладочные работы)</b>
+';
+            $pnrPlan = ($cardData && $cardData['pnr_planned_hours']) ? $cardData['pnr_planned_hours'] : 0;
+            $text .= '📊 План: ' . $pnrPlan . ' дн.
+';
+            
+            // Standard PNR milestones (always the same for all projects)
+            if (!empty($pnrMilestones)) {
+                $text .= '
+<b>Вехи:</b>
+';
+                foreach ($pnrMilestones as $idx => $milestone) {
+                    $num = $idx + 1;
+                    $milestoneName = $milestone['milestone_name'];
+                    $fact = $pnrMilestonesFact[$milestoneName] ?? 0;
+                    $plan = $milestone['planned_hours'] ?? 0;
+                    $text .= "  {$num}. {$milestoneName} (План: {$plan} дн. | Факт: {$fact} дн.)
+";
+                }
+            } else {
+                // Show standard milestones from process structure
+                $text .= '
+<b>Вехи:</b>
+';
+                $standardMilestones = [
+                    'Электрооборудование',
+                    'Пожарная сигнализация',
+                    'Охранная сигнализация',
+                    'Автоматизация',
+                    'Вентиляция и отопление',
+                    'Технологическое оборудование',
+                    'Метрология',
+                    'Режимная наладка',
+                    'Комплексное опробование'
+                ];
+                foreach ($standardMilestones as $idx => $milestoneName) {
+                    $num = $idx + 1;
+                    $fact = $pnrMilestonesFact[$milestoneName] ?? 0;
+                    $text .= "  {$num}. {$milestoneName} (План: 0 дн. | Факт: {$fact} дн.)
+";
+                }
+            }
+            
+            // PNR Project Activity Section (without numbering)
+            $text .= '
+💼 <b>Проектная деятельность:</b> ' . ($pnrAdditional['project_activity_pnr'] ?? 0) . ' дн.
+';
+            
+            // PNR Additional Work Section
+            $text .= '
+📋 <b>Дополнительные работы:</b>
+';
+            $text .= '  • Простои: ' . ($pnrAdditional['downtime_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Устранение замечаний РК: ' . ($pnrAdditional['rk_comments_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Гарантийные работы: ' . ($pnrAdditional['warranty_pnr'] ?? 0) . ' дн.
+';
+            $additionalTotal = ($pnrAdditional['additional_work'] ?? 0) + ($pnrAdditional['pnr_stage_additional_work'] ?? 0);
+            $text .= '  • Дополнительные работы: ' . $additionalTotal . ' дн.
+';
+            $text .= '  • Мобилизационные мероприятия: ' . ($pnrAdditional['mobilization_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Проектная деятельность: ' . ($pnrAdditional['delivery_organization_pnr'] ?? 0) . ' дн.
+';
+            
+            $text .= '
+📊 <b>Активность:</b>
+';
+            $text .= '  • Записей в табеле: ' . $entryCount . '
+';
+            
+            $keyboard = [
+                [
+                    ['text' => '⚙️ Конструктор', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗑️ Удалить проект', 'callback_data' => 'proj_card_delete_confirm_' . $projectCode]
+                ],
+                [
+                    ['text' => '⬅️ К списку', 'callback_data' => 'proj_card_list']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::viewProjectCard error: " . $e->getMessage());
+            error_log("ProjectHandler::viewProjectCard trace: " . $e->getTraceAsString());
+            return $this->messageService->sendMessage($chatId, 'Ошибка загрузки карточки: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Add new project
+     */
+    private function addNewProject(string $chatId, int $userId, Conversation $conversation): ServerResponse
+    {
+        try {
+            // Start conversation for project creation
+            $conversation->notes['state'] = 'awaiting_project_code';
+            $conversation->update();
+            
+            $text = "➕ <b>Добавление нового проекта</b>\n\n";
+            $text .= "🔢 Введите шифр проекта:\n\n";
+            $text .= "<i>Формат: буквы, цифры и дефис</i>\n\n";
+            $text .= "⚠️ Шифр должен содержать только заглавные буквы, цифры и дефис";
+            
+            $keyboard = [
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_card_cancel']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::addNewProject error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, 'Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Cancel project creation
+     */
+    private function cancelProjectCreation(string $chatId, int $userId, Conversation $conversation): ServerResponse
+    {
+        $conversation->stop();
+        return $this->showProjectCardsMenu($chatId, $userId);
+    }
+    
+    /**
+     * Confirm project deletion
+     */
+    private function confirmDeleteProject(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get project info
+            $stmt = $conn->prepare("
+                SELECT code, name 
+                FROM project 
+                WHERE code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $project = $result->fetch_assoc();
+            
+            if (!$project) {
+                return $this->messageService->sendMessage($chatId, '❌ Проект не найден');
+            }
+            
+            // Count related data
+            $stmt = $conn->prepare("SELECT COUNT(*) as cnt FROM ozna_tabel WHERE message LIKE CONCAT('%', ?, '%')");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $tabelCount = $result->fetch_assoc()['cnt'];
+            
+            $text = "⚠️ <b>Подтверждение удаления</b>\n\n";
+            $text .= "🔹 Шифр: <b>{$project['code']}</b>\n";
+            $text .= "🔹 Наименование: {$project['name']}\n\n";
+            
+            if ($tabelCount > 0) {
+                $text .= "📄 В табеле: {$tabelCount} записей\n\n";
+            }
+            
+            $text .= "⚠️ <b>Внимание!</b> Удаление проекта НЕ удалит записи из табеля.\n";
+            $text .= "Проект будет помечен как неактивный.\n\n";
+            $text .= "Вы уверены?";
+            
+            $keyboard = [
+                [
+                    ['text' => '✅ Да, удалить', 'callback_data' => 'proj_card_delete_yes_' . $projectCode],
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_card_delete_no_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::confirmDeleteProject error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Delete project (mark as inactive)
+     */
+    private function deleteProject(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Mark project as inactive instead of deleting
+            $stmt = $conn->prepare("
+                UPDATE project 
+                SET is_active = 0 
+                WHERE code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            
+            if ($stmt->affected_rows > 0) {
+                $text = "✅ <b>Проект удалён</b>\n\n";
+                $text .= "🔹 Шифр: {$projectCode}\n\n";
+                $text .= "📄 Проект помечен как неактивный.\n";
+                $text .= "Записи в табеле сохранены.";
+                
+                $keyboard = [
+                    [
+                        ['text' => '📋 Список проектов', 'callback_data' => 'proj_card_list']
+                    ],
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_КарточкаПроекта']
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            } else {
+                return $this->messageService->sendMessage($chatId, '❌ Проект не найден');
+            }
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::deleteProject error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при удалении: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Handle text messages for project creation
+     */
+    public function handleMessage(string $chatId, int $userId, string $text, Conversation $conversation): ?ServerResponse
+    {
+        // Check if we're in project creation flow
+        if (!isset($conversation->notes['state'])) {
+            return null;
+        }
+        
+        $state = $conversation->notes['state'];
+        
+        if ($state === 'awaiting_project_code') {
+            return $this->handleProjectCodeInput($chatId, $userId, $text, $conversation);
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Handle project code input
+     */
+    private function handleProjectCodeInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Validate project code format: only letters, numbers, and hyphens
+        if (!preg_match('/^[A-ZА-Я0-9\-]+$/u', $text)) {
+            $errorText = "❌ <b>Неправильный формат шифра</b>\n\n";
+            $errorText .= "⚠️ Шифр должен содержать только:\n";
+            $errorText .= "  • Заглавные буквы (A-Z, А-Я)\n";
+            $errorText .= "  • Цифры (0-9)\n";
+            $errorText .= "  • Дефис (-)\n\n";
+            $errorText .= "🔢 Попробуйте снова или нажмите Отмена";
+            
+            $keyboard = [
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_card_cancel']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+        }
+        
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = strtoupper($text);
+            
+            // Check if project already exists (including inactive)
+            $stmt = $conn->prepare("SELECT code, is_active FROM project WHERE code = ? LIMIT 1");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $existingProject = $result->fetch_assoc();
+            
+            if ($existingProject) {
+                // If project exists but is inactive, reactivate it
+                if ($existingProject['is_active'] == 0) {
+                    $stmt = $conn->prepare("
+                        UPDATE project 
+                        SET is_active = 1, name = ? 
+                        WHERE code = ?
+                    ");
+                    $stmt->bind_param('ss', $projectCode, $projectCode);
+                    $stmt->execute();
+                    
+                    // Clear conversation
+                    $conversation->stop();
+                    
+                    $successText = "✅ <b>Проект реактивирован!</b>\n\n";
+                    $successText .= "🔹 Шифр: {$projectCode}\n\n";
+                    $successText .= "📄 Проект был удалён ранее, теперь он снова активен.\n";
+                    $successText .= "📊 Используйте <b>Конструктор</b> для заполнения данных";
+                    
+                    $keyboard = [
+                        [
+                            ['text' => '🗂️ Открыть карточку', 'callback_data' => 'proj_card_view_' . $projectCode]
+                        ],
+                        [
+                            ['text' => '📋 Список проектов', 'callback_data' => 'proj_card_list']
+                        ],
+                        [
+                            ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_КарточкаПроекта']
+                        ]
+                    ];
+                    
+                    return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+                } else {
+                    // Project is active - cannot add duplicate
+                    $errorText = "❌ <b>Проект уже существует</b>\n\n";
+                    $errorText .= "Проект с шифром <b>{$projectCode}</b> уже есть в системе.\n\n";
+                    $errorText .= "🔢 Введите другой шифр или нажмите Отмена";
+                    
+                    $keyboard = [
+                        [
+                            ['text' => '❌ Отмена', 'callback_data' => 'proj_card_cancel']
+                        ]
+                    ];
+                    
+                    return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+                }
+            }
+            
+            // Insert new project (name = code initially)
+            $stmt = $conn->prepare("
+                INSERT INTO project (code, name, is_active, created_at) 
+                VALUES (?, ?, 1, NOW())
+            ");
+            $stmt->bind_param('ss', $projectCode, $projectCode);
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = "✅ <b>Проект успешно добавлен!</b>\n\n";
+            $successText .= "🔹 Шифр: {$projectCode}\n\n";
+            $successText .= "📊 Теперь откройте карточку проекта и используйте <b>Конструктор</b> для заполнения всех данных";
+            
+            $keyboard = [
+                [
+                    ['text' => '🗂️ Открыть карточку', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ],
+                [
+                    ['text' => '📋 Список проектов', 'callback_data' => 'proj_card_list']
+                ],
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => 'category_Проекты_КарточкаПроекта']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleProjectCodeInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при добавлении проекта: ' . $e->getMessage());
+        }
+    }
+}
+

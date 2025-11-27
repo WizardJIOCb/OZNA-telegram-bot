@@ -1,0 +1,21 @@
+Друг, кнопка не работает потому что нужно перезапустить PHP-FPM на сервере!
+
+Выполни пожалуйста эти 3 команды:
+
+```
+sudo systemctl restart php8.3-fpm
+sudo chown -R www-data:www-data /var/www/api.ladyzenko.pro/tg/ozna/
+sudo chmod -R 755 /var/www/api.ladyzenko.pro/tg/ozna/
+```
+
+После этого попробуй кнопку "Простой отчёт" в боте ещё раз.
+
+Если не поможет, выполни эту команду и отправь мне результат:
+
+```
+grep -c "proj_report_simple" /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Handlers/ProjectHandler.php
+```
+
+Должно показать цифру больше 0 (например, 5 или 6).
+
+Если показывает 0 - значит файлы не обновились на сервере.

@@ -1,0 +1,76 @@
+<?php
+// Test script to simulate the "Пусконаладочные работы" button press
+
+echo "=== Testing 'Пусконаладочные работы' button ===\n";
+
+// Simulate the callback data that would be sent by the button
+$callbackData = 'category_Табель_ПНР';
+echo "Original callback data: $callbackData\n";
+
+// Simulate what happens in CallbackHandlerFactory::extractCategory
+function extractCategory($callbackData) {
+    if (strpos($callbackData, 'category_') === 0) {
+        $category = substr($callbackData, strlen('category_'));
+        return $category;
+    }
+    return $callbackData;
+}
+
+$category = extractCategory($callbackData);
+echo "Extracted category: $category\n";
+
+// Check if TabelHandler would handle this
+function tabelHandlerCanHandle($callbackData) {
+    return strpos($callbackData, 'category_Табель') === 0;
+}
+
+$canHandle = tabelHandlerCanHandle($callbackData);
+echo "TabelHandler canHandle result: " . ($canHandle ? 'true' : 'false') . "\n";
+
+// Simulate the routing in TabelHandler
+function routeTabelCallback($category) {
+    echo "Routing category: $category\n";
+    
+    // Check for main tabel menu
+    if ($category === 'Табель') {
+        echo "  -> Would handle main tabel menu\n";
+        return true;
+    }
+    
+    // Check for commissioning works menu (Пусконаладочные работы)
+    if ($category === 'Табель_ПНР') {
+        echo "  -> Would handle commissioning works menu (Пусконаладочные работы)\n";
+        echo "  -> Should call handleOtherWorkTypes with category Табель_ПНР\n";
+        return handleOtherWorkTypes('test_chat_id', $category, null);
+    }
+    
+    echo "  -> Would not match any specific route\n";
+    return false;
+}
+
+function handleOtherWorkTypes($chatId, $category, $conversation) {
+    echo "In handleOtherWorkTypes with category: $category\n";
+    
+    if ($category === 'Табель_ПНР') {
+        echo "  -> Matched Табель_ПНР category\n";
+        echo "  -> Would call handleCommissioningWorksMenu\n";
+        return handleCommissioningWorksMenu($chatId);
+    }
+    
+    echo "  -> Category not matched in handleOtherWorkTypes\n";
+    return false;
+}
+
+function handleCommissioningWorksMenu($chatId) {
+    echo "In handleCommissioningWorksMenu\n";
+    echo "  -> Would create commissioning works keyboard\n";
+    echo "  -> Would send message with equipment selection menu\n";
+    return true;
+}
+
+// Test the routing
+$result = routeTabelCallback($category);
+echo "Routing result: " . ($result ? 'success' : 'failure') . "\n";
+
+echo "\nTest completed!\n";
+?>
