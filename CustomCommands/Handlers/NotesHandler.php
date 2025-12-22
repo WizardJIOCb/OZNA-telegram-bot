@@ -120,7 +120,7 @@ class NotesHandler implements CallbackHandlerInterface
         // Роутинг по типу callback
         if (preg_match('/^notes_menu_(.+)$/', $callbackData, $matches)) {
             $context = $matches[1];
-            return $this->showNotesMenu($chatId, $userId, $context);
+            return $this->showNotesMenu($chatId, $userId, $context, $callbackQuery);
         } elseif ($callbackData === 'notes_cancel_create') {
             // Отмена создания заметки
             return $this->cancelNoteCreation($chatId, $userId, $conversation);
@@ -167,13 +167,13 @@ class NotesHandler implements CallbackHandlerInterface
         }
         
         // Fallback
-        return $this->showNotesMenu($chatId, $userId, 'ПНР');
+        return $this->showNotesMenu($chatId, $userId, 'ПНР', $callbackQuery);
     }
     
     /**
      * Показать меню заметок
      */
-    private function showNotesMenu($chatId, $userId, $context): ServerResponse
+    private function showNotesMenu($chatId, $userId, $context, $callbackQuery = null): ServerResponse
     {
         $keyboard = [
             [['text' => '✍️ Оставить заметку', 'callback_data' => 'notes_create_' . $context]],
@@ -183,6 +183,18 @@ class NotesHandler implements CallbackHandlerInterface
         
         $text = "📌 <b>Заметки по проекту</b>\n\n";
         $text .= "Выберите действие:";
+        
+        // Use delete+send pattern if callbackQuery is provided
+        if ($callbackQuery !== null) {
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            
+            return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
+        }
         
         return $this->messageService->sendMessage($chatId, $text, $keyboard);
     }

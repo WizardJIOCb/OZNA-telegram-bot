@@ -122,6 +122,71 @@ class MessageService
     }
 
     /**
+     * Edit existing message text and keyboard
+     * Used to update menus without creating new messages
+     */
+    public function editMessage(string $chatId, int $messageId, string $text, ?array $keyboard = null, string $parseMode = 'HTML'): ServerResponse
+    {
+        try {
+            error_log("MessageService editMessage START for chatId: {$chatId}, messageId: {$messageId}");
+            error_log("MessageService editMessage text: " . mb_substr($text, 0, 100) . "...");
+            if ($keyboard) {
+                error_log("MessageService editMessage keyboard: " . json_encode($keyboard, JSON_UNESCAPED_UNICODE));
+            }
+            
+            // Initialize bot if needed for standalone execution
+            $this->initializeBotIfNeeded();
+            
+            // Ensure text is properly UTF-8 encoded
+            if (function_exists('mb_convert_encoding')) {
+                $text = mb_convert_encoding($text, 'UTF-8', 'auto');
+            } else {
+                $text = utf8_encode($text);
+            }
+            
+            $data = [
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+                'text' => $text,
+                'disable_web_page_preview' => true,
+                'parse_mode' => $parseMode,
+            ];
+
+            if ($keyboard) {
+                // Ensure keyboard is properly UTF-8 encoded
+                $keyboard = $this->ensureUtf8Encoding($keyboard);
+                
+                // For inline keyboards pass the array directly
+                $data['reply_markup'] = json_encode(['inline_keyboard' => $keyboard], JSON_UNESCAPED_UNICODE);
+                error_log("MessageService editMessage keyboard JSON: " . $data['reply_markup']);
+            }
+            
+            error_log("MessageService editMessage data: " . json_encode($data, JSON_UNESCAPED_UNICODE));
+
+            $result = Request::editMessageText($data);
+            
+            error_log("MessageService editMessage result: " . (is_object($result) && method_exists($result, 'isOk') ? ($result->isOk() ? 'success' : 'failed') : 'unknown'));
+            
+            if (is_object($result) && method_exists($result, 'isOk') && !$result->isOk()) {
+                error_log("MessageService editMessage error: " . $result->getDescription());
+                error_log("MessageService editMessage error code: " . $result->getErrorCode());
+            }
+            
+            error_log("MessageService editMessage END");
+            return $result;
+            
+        } catch (Exception $e) {
+            error_log("MessageService editMessage EXCEPTION: " . $e->getMessage());
+            error_log("MessageService editMessage EXCEPTION trace: " . $e->getTraceAsString());
+            throw $e;
+        } catch (Error $e) {
+            error_log("MessageService editMessage ERROR: " . $e->getMessage());
+            error_log("MessageService editMessage ERROR trace: " . $e->getTraceAsString());
+            throw $e;
+        }
+    }
+
+    /**
      * Send message with reply keyboard (persistent menu)
      */
     public function sendMessageWithReplyKeyboard(string $chatId, string $text, array $keyboard, string $parseMode = 'HTML'): ServerResponse
@@ -180,6 +245,60 @@ class MessageService
             error_log("MessageService sendMessageWithReplyKeyboard ERROR: " . $e->getMessage());
             error_log("MessageService sendMessageWithReplyKeyboard ERROR trace: " . $e->getTraceAsString());
             throw $e;
+        }
+    }
+
+    /**
+     * Delete message and send a new one
+     * This creates a "clean" effect by removing the old message first
+     * @param int $delayMs - Delay in milliseconds between delete and send (default: 300ms for visible animation)
+     */
+    public function deleteAndSendMessage(string $chatId, int $messageId, string $text, ?array $keyboard = null, string $parseMode = 'HTML', int $delayMs = 300): ServerResponse
+    {
+        try {
+            error_log("MessageService: deleteAndSendMessage - deleting message {$messageId} with {$delayMs}ms delay before sending new one");
+            
+            // First, delete the old message
+            $deleteResult = Request::deleteMessage([
+                'chat_id' => $chatId,
+                'message_id' => $messageId
+            ]);
+            
+            error_log("MessageService: delete result: " . ($deleteResult->isOk() ? 'success' : 'failed'));
+            
+            // Add delay to make the deletion visible (creates animation effect)
+            if ($delayMs > 0) {
+                usleep($delayMs * 1000); // Convert milliseconds to microseconds
+            }
+            
+            // Then send the new message
+            return $this->sendMessage($chatId, $text, $keyboard, $parseMode);
+            
+        } catch (Exception $e) {
+            error_log("MessageService: deleteAndSendMessage EXCEPTION: " . $e->getMessage());
+            // If delete fails, just send the new message
+            return $this->sendMessage($chatId, $text, $keyboard, $parseMode);
+        }
+    }
+
+    /**
+     * Smart message sending with multiple strategies
+     * @param bool $deleteOld - if true, deletes old message and sends new one (clean effect)
+     *                          if false, edits existing message (default)
+     */
+    public function sendOrEditMessage(string $chatId, string $text, ?array $keyboard = null, ?int $messageId = null, string $parseMode = 'HTML', bool $deleteOld = false): ServerResponse
+    {
+        if ($messageId !== null) {
+            if ($deleteOld) {
+                error_log("MessageService: sendOrEditMessage - deleting old and sending new (messageId: {$messageId})");
+                return $this->deleteAndSendMessage($chatId, $messageId, $text, $keyboard, $parseMode);
+            } else {
+                error_log("MessageService: sendOrEditMessage - editing message {$messageId}");
+                return $this->editMessage($chatId, $messageId, $text, $keyboard, $parseMode);
+            }
+        } else {
+            error_log("MessageService: sendOrEditMessage - sending new message");
+            return $this->sendMessage($chatId, $text, $keyboard, $parseMode);
         }
     }
 
@@ -2368,6 +2487,18 @@ class MessageService
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => $backCallback]
+            ]
+        ];
+    }
+
+    /**
+     * Create inline keyboard for notes reminder with button to open project notes
+     */
+    public function createNotesReminderKeyboard(string $context): array
+    {
+        return [
+            [
+                ['text' => '📌 Открыть заметки', 'callback_data' => 'notes_menu_' . $context]
             ]
         ];
     }

@@ -267,6 +267,7 @@ class TabelHandler implements CallbackHandlerInterface
         $chatId = $callbackQuery->getMessage()->getChat()->getId();
         $userId = $callbackQuery->getFrom()->getId();
         $callbackData = $callbackQuery->getData();
+        $messageId = $callbackQuery->getMessage()->getMessageId(); // ⭐ Get messageId for editing messages
 
         error_log("TabelHandler: handle called with category: '{$category}' and callbackData: '{$callbackData}' for user: {$userId}");
         
@@ -309,7 +310,7 @@ class TabelHandler implements CallbackHandlerInterface
         // We need to intercept it HERE to preserve the "back" intent
         if ($callbackData === 'cat_МобБриг_Назад') {
             error_log("TabelHandler: Mobile Brigade 'Назад' button intercepted - routing to menu");
-            return $this->handleMobileBrigadeMenu($chatId, $conversation);
+            return $this->handleMobileBrigadeMenu($chatId, $conversation, $messageId);
         }
         
         $actualCategory = $this->extractCategoryFromCallback($callbackData);
@@ -464,7 +465,7 @@ class TabelHandler implements CallbackHandlerInterface
             }
         }
 
-        return $this->routeTabelCallback($callbackQuery, $category, $conversation);
+        return $this->routeTabelCallback($callbackQuery, $category, $conversation, $messageId);
     }
 
     public function getPriority(): int
@@ -527,7 +528,7 @@ class TabelHandler implements CallbackHandlerInterface
         return in_array($category, ['Табель', 'Табель_Мобильная_Бригада_Дата']);
     }
 
-    private function routeTabelCallback(CallbackQuery $callbackQuery, string $category, Conversation $conversation): ServerResponse
+    private function routeTabelCallback(CallbackQuery $callbackQuery, string $category, Conversation $conversation, int $messageId): ServerResponse
     {
         $chatId = $callbackQuery->getMessage()->getChat()->getId();
         $userId = $callbackQuery->getFrom()->getId();
@@ -852,7 +853,7 @@ class TabelHandler implements CallbackHandlerInterface
             error_log("📞 URGENT FIX: Electrical equipment button clicked! Routing to handleElectricalEquipmentMenu");
             
             try {
-                return $this->handleElectricalEquipmentMenu($chatId);
+                return $this->handleElectricalEquipmentMenu($chatId, $messageId);
             } catch (\Exception $e) {
                 error_log("🚨 CRITICAL ERROR in handleElectricalEquipmentMenu: " . $e->getMessage());
                 error_log("🚨 Stack trace: " . $e->getTraceAsString());
@@ -877,10 +878,11 @@ class TabelHandler implements CallbackHandlerInterface
                 ];
                 
                 error_log("🛠️ Using fallback electrical equipment keyboard");
-                return $this->messageService->sendMessage(
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     '<b>⚡ Электрооборудование</b> Выберите тип работ:',
-                    $fallbackKeyboard
+                    $fallbackKeyboard,
+                    $messageId
                 );
             }
         }
@@ -890,7 +892,7 @@ class TabelHandler implements CallbackHandlerInterface
         if (($category === 'cat_ТабАвтом' || $category === 'Табель_Автоматизация') && 
             $category !== 'cat_ШМР_Автом' && $category !== 'Табель_ШМР_Автоматизация') {
             error_log("TabelHandler: IMMEDIATE automation equipment menu handling for: {$category}");
-            return $this->handleAutomationEquipmentMenu($chatId);
+            return $this->handleAutomationEquipmentMenu($chatId, $messageId);
         }
         
         // IMMEDIATE HEATING AND VENTILATION EQUIPMENT HANDLING - HIGHEST PRIORITY
@@ -899,7 +901,7 @@ class TabelHandler implements CallbackHandlerInterface
         if (($category === 'cat_ТабВентОтопл' || $category === 'Табель_ОтоплениеИВентиляция' || $category === 'cat_ТабОтоплВент') && 
             !str_contains($category, 'ШМР')) {
             error_log("TabelHandler: IMMEDIATE heating and ventilation equipment menu handling for: {$category}");
-            return $this->handleHeatingVentilationEquipmentMenu($chatId);
+            return $this->handleHeatingVentilationEquipmentMenu($chatId, $messageId);
         }
         
         // IMMEDIATE FIRE ALARM EQUIPMENT HANDLING - HIGHEST PRIORITY
@@ -907,7 +909,7 @@ class TabelHandler implements CallbackHandlerInterface
         if (($category === 'cat_ТабПожСигн' || $category === 'Табель_ПожарнаяСигнализация') && 
             $category !== 'cat_ШМР_ПожСигн' && $category !== 'Табель_ШМР_ПожарнаяСигнализация') {
             error_log("TabelHandler: IMMEDIATE fire alarm equipment menu handling for: {$category}");
-            return $this->handleFireAlarmEquipmentMenu($chatId);
+            return $this->handleFireAlarmEquipmentMenu($chatId, $messageId);
         }
         
         // IMMEDIATE SECURITY ALARM EQUIPMENT HANDLING - HIGHEST PRIORITY
@@ -915,7 +917,7 @@ class TabelHandler implements CallbackHandlerInterface
         if (($category === 'cat_ТабОхрСигн' || $category === 'Табель_ОхраннаяСигнализация') && 
             $category !== 'cat_ШМР_ОхрСигн' && $category !== 'Табель_ШМР_ОхраннаяСигнализация') {
             error_log("TabelHandler: IMMEDIATE security alarm equipment menu handling for: {$category}");
-            return $this->handleSecurityAlarmEquipmentMenu($chatId);
+            return $this->handleSecurityAlarmEquipmentMenu($chatId, $messageId);
         }
         
         // IMMEDIATE TECHNOLOGICAL EQUIPMENT HANDLING - HIGHEST PRIORITY
@@ -923,27 +925,33 @@ class TabelHandler implements CallbackHandlerInterface
         if (($category === 'cat_ТабТехОб' || $category === 'Табель_ТехнологическоеОборудование') && 
             $category !== 'cat_ШМР_ТехОб' && $category !== 'Табель_ШМР_ТехнологическоеОборудование') {
             error_log("TabelHandler: IMMEDIATE technological equipment menu handling for: {$category}");
-            return $this->handleTechnologicalEquipmentMenu($chatId);
+            return $this->handleTechnologicalEquipmentMenu($chatId, $messageId);
         }
         
         // IMMEDIATE METROLOGY HANDLING - HIGHEST PRIORITY
         // EXCLUDE ШМР metrology equipment callbacks to allow normal ШМР confirmation flow
         if (($category === 'cat_ТабМетрол' || $category === 'Табель_Метрология') && $category !== 'cat_ШМР_Метрол') {
             error_log("TabelHandler: IMMEDIATE metrology menu handling for: {$category}");
-            return $this->handleMetrologyMenu($chatId);
+            return $this->handleMetrologyMenu($chatId, $messageId);
         }
         
         // IMMEDIATE FIRE ALARM EQUIPMENT ADDITIONAL WORKS HANDLING - HIGHEST PRIORITY
         if ($category === 'cat_ТабПожСигн_ДопРаб' || $category === 'Табель_ДопРаб_ПожСигн' || 
             $callbackQuery->getData() === 'cat_ТабПожСигн_ДопРаб') {
             error_log("TabelHandler: IMMEDIATE fire alarm additional works handling for: {$category}");
-            return $this->handleAdditionalWorksFireAlarmMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksFireAlarmMenu($chatId, $messageId);
         }
 
         // Main tabel menu
         if ($category === 'Табель') {
             error_log("TabelHandler: routing to handleMainTabel");
-            return $this->handleMainTabel($chatId);
+            return $this->handleMainTabel($chatId, $messageId);
         }
 
         // Date selection flows
@@ -961,43 +969,43 @@ class TabelHandler implements CallbackHandlerInterface
         // Work type selection
         if ($category === 'Табель_Мобильная_Бригада_Дата' || $category === 'Табель_МобБриг_Дата') {
             error_log("TabelHandler: routing to handleDateSelectionMenu");
-            return $this->handleDateSelectionMenu($chatId);
+            return $this->handleDateSelectionMenu($chatId, $messageId);
         }
 
         // TKP preparation main button - show submenu
         if ($category === 'Табель_ПодготовкаТКП') {
             error_log("TabelHandler: routing TKP main button to handleTKPSubtypesMenu");
-            return $this->handleTKPSubtypesMenu($chatId);
+            return $this->handleTKPSubtypesMenu($chatId, $messageId);
         }
         
         // TKP preparation menu (alternative callback)
         if ($category === 'Табель_ПодготовкаТКП_Меню') {
             error_log("TabelHandler: routing to handleTKPSubtypesMenu");
-            return $this->handleTKPSubtypesMenu($chatId);
+            return $this->handleTKPSubtypesMenu($chatId, $messageId);
         }
 
         // Back to current activity menu
         if ($category === 'Табель_Текущая_Назад') {
             error_log("TabelHandler: routing to handleBackToCurrentActivity");
-            return $this->handleBackToCurrentActivity($chatId, $conversation);
+            return $this->handleBackToCurrentActivity($chatId, $conversation, $messageId);
         }
         
         // Back to commissioning menu
         if ($category === 'Табель_Пусконаладка_Back') {
             error_log("TabelHandler: routing to handleBackToCommissioning");
-            return $this->handleBackToCommissioning($chatId, $conversation);
+            return $this->handleBackToCommissioning($chatId, $conversation, $messageId);
         }
         
         // Back to supervision menu
         if ($category === 'Табель_ШМ_Back') {
             error_log("TabelHandler: routing to handleBackToSupervision");
-            return $this->handleBackToSupervision($chatId, $conversation);
+            return $this->handleBackToSupervision($chatId, $conversation, $messageId);
         }
         
         // Back to supervision works menu (Шеф-монтажные работы)
         if ($category === 'Табель_ШМ_ШефМонт_Back') {
             error_log("TabelHandler: routing back to Supervision Works menu");
-            return $this->handleSupervisionWorksMenu($chatId, $conversation);
+            return $this->handleSupervisionWorksMenu($chatId, $conversation, $messageId);
         }
 
         // Handle Простой (Idle/Downtime) - route to detailed idle menu system
@@ -1009,13 +1017,25 @@ class TabelHandler implements CallbackHandlerInterface
         // Handle supervision warranty equipment (EARLY ROUTING)
         if ($category === 'Табель_ШМ_РабГарантии') {
             error_log("TabelHandler: EARLY routing to supervision warranty equipment menu");
-            return $this->handleWarrantyEquipmentMenu($chatId, $conversation, 'supervision');
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleWarrantyEquipmentMenu($chatId, $conversation, 'supervision', $messageId);
         }
         
         // Handle supervision RK elimination (EARLY ROUTING)
         if ($category === 'Табель_ШМ_УЗ_РК') {
             error_log("TabelHandler: EARLY routing to supervision RK elimination menu");
-            return $this->handleSupervisionRKCommentsEliminationMenu($chatId, $conversation);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleSupervisionRKCommentsEliminationMenu($chatId, $conversation, $messageId);
         }
         
         // REMOVED: Early ШМР schedule routing that bypassed confirmation dialog
@@ -1086,7 +1106,7 @@ class TabelHandler implements CallbackHandlerInterface
         
         // Other work types
         error_log("TabelHandler: routing to handleOtherWorkTypes");
-        $response = $this->handleOtherWorkTypes($chatId, $category, $conversation);
+        $response = $this->handleOtherWorkTypes($chatId, $category, $conversation, $callbackQuery);
         
         // Release callback lock if it was set
         if (isset($conversation->notes['_active_callback_lock'])) {
@@ -1883,20 +1903,22 @@ class TabelHandler implements CallbackHandlerInterface
         return '';
     }
 
-    private function handleMainTabel(string $chatId): ServerResponse
+    private function handleMainTabel(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createWorkTypeKeyboard();
         $text = '<b>Выберите вид работ</b>';
         $text = $this->ensureUtf8Encoding($text);
-        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        // Use delete+send for clean effect (last param = true)
+        return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
     }
 
-    private function handleDateSelectionMenu(string $chatId): ServerResponse
+    private function handleDateSelectionMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createDateSelectionKeyboard();
         $text = '<b>Выберите дату</b>';
         $text = $this->ensureUtf8Encoding($text);
-        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        // Use delete+send for clean effect (last param = true)
+        return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
     }
 
     private function handleDateSelection(CallbackQuery $callbackQuery, string $category, Conversation $conversation): ServerResponse
@@ -1961,10 +1983,15 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 // Для текущей деятельности сразу показываем типы активности
                 $keyboard = $this->messageService->createCurrentActivityKeyboard();
-                return $this->messageService->sendMessage(
+                // Extract messageId from callbackQuery
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     "<b>💼 Табель - Текущая деятельность за {$date}</b>",
-                    $keyboard
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
                 );
             } elseif (str_contains($category, 'Пусконаладка') || str_contains($category, 'ПНЛ')) {
                 // Special handling for short format commissioning works
@@ -1993,7 +2020,16 @@ class TabelHandler implements CallbackHandlerInterface
                     
                     $text = "<b>⚙️ Табель Пусконаладка за {$date}, выбор проекта</b>";
                     $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
-                    return $this->messageService->sendMessage($chatId, $text, $keyboard);
+                    // Extract messageId for delete+send effect
+                    $messageId = $callbackQuery->getMessage()->getMessageId();
+                    return $this->messageService->sendOrEditMessage(
+                        $chatId, 
+                        $text, 
+                        $keyboard,
+                        $messageId,
+                        'HTML',
+                        true // Delete old message and send new for clean effect
+                    );
                 }
             } elseif (str_contains($category, 'Шеф-монтаж') || str_contains($category, 'ШМ')) {
                 // Для Шеф-монтажа сразу переходим к выбору проекта
@@ -2005,7 +2041,16 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 $text = "<b>🔧 Табель Шеф-монтаж за {$date}, выбор проекта</b>";
                 $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
-                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+                // Extract messageId for delete+send effect
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
+                    $chatId, 
+                    $text, 
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
+                );
             } elseif (str_contains($category, 'Мобильная_Бригада') || str_contains($category, 'МобБриг')) {
                 error_log("TabelHandler: detected mobile brigade flow");
                 // Для мобильной бригады устанавливаем флаг мобильной бригады
@@ -2018,7 +2063,16 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 $text = "<b>👷‍♂️ Табель Мобильная бригада за {$date}, выбор проекта</b>";
                 $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
-                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+                // Extract messageId for delete+send effect
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
+                    $chatId, 
+                    $text, 
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
+                );
             } else {
                 error_log("TabelHandler: defaulting to mobile brigade flow");
                 // Для мобильной бригады устанавливаем флаг мобильной бригады
@@ -2032,7 +2086,16 @@ class TabelHandler implements CallbackHandlerInterface
                 $text = "<b>Табель за {$date}, выбор проекта</b>";
                 
                 $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
-                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+                // Extract messageId for delete+send effect
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
+                    $chatId, 
+                    $text, 
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
+                );
             }
         }
         
@@ -2085,44 +2148,69 @@ class TabelHandler implements CallbackHandlerInterface
             if ($isCurrentActivity) {
                 error_log("TabelHandler: showing current activity keyboard");
                 $keyboard = $this->messageService->createCurrentActivityKeyboard();
-                return $this->messageService->sendMessage(
+                // Extract messageId from callbackQuery
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     "<b>💼 Табель - Текущая деятельность для проекта {$projectCode}</b>",
-                    $keyboard
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
                 );
             } elseif ($isCommissioning) {
                 error_log("TabelHandler: showing commissioning keyboard");
                 $keyboard = $this->messageService->createCommissioningKeyboard();
-                return $this->messageService->sendMessage(
+                // Extract messageId from callbackQuery
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     "<b>⚙️ Табель - Пусконаладка для проекта {$projectCode}</b>",
-                    $keyboard
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
                 );
             } elseif ($isSupervision) {
                 error_log("TabelHandler: showing supervision keyboard");
                 $keyboard = $this->messageService->createSupervisionKeyboard();
-                return $this->messageService->sendMessage(
+                // Extract messageId from callbackQuery
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     "<b>🔧 Табель - Шеф-монтаж для проекта {$projectCode}</b>",
-                    $keyboard
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
                 );
             } elseif ($isMobileBrigade) {
                 error_log("TabelHandler: showing mobile brigade keyboard");
                 $keyboard = $this->messageService->createMobileBrigadeKeyboard();
                 error_log("TabelHandler: mobile brigade keyboard created with " . count($keyboard) . " rows");
-                return $this->messageService->sendMessage(
+                // Extract messageId from callbackQuery
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     "<b>👷‍♂️ Табель - Мобильная бригада для проекта {$projectCode}</b>",
-                    $keyboard
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
                 );
             } else {
                 error_log("TabelHandler: defaulting to mobile brigade keyboard");
                 $keyboard = $this->messageService->createMobileBrigadeKeyboard();
                 error_log("TabelHandler: mobile brigade keyboard created with " . count($keyboard) . " rows");
-                return $this->messageService->sendMessage(
+                // Extract messageId from callbackQuery
+                $messageId = $callbackQuery->getMessage()->getMessageId();
+                return $this->messageService->sendOrEditMessage(
                     $chatId, 
                     "<b>👷‍♂️ Табель - Мобильная бригада для проекта {$projectCode}</b>",
-                    $keyboard
+                    $keyboard,
+                    $messageId,
+                    'HTML',
+                    true // Delete old message and send new for clean effect
                 );
             }
         }
@@ -2385,7 +2473,21 @@ class TabelHandler implements CallbackHandlerInterface
             
             $keyboard = $this->messageService->createConfirmationKeyboard($callbackData);
             
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            
+            return $this->messageService->sendOrEditMessage(
+                $chatId, 
+                $confirmationText, 
+                $keyboard,
+                $messageId,
+                'HTML',
+                true // Delete old message and send new for clean effect
+            );
         }
         
         // Handle short callback format for electrical equipment and commissioning works
@@ -2604,7 +2706,21 @@ class TabelHandler implements CallbackHandlerInterface
             error_log("🔓 MySQL callback lock released after showing confirmation dialog: '{$lockKey}'");
         }
         
-        return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+        // Extract messageId for delete+send effect
+        $messageId = null;
+        $message = $callbackQuery->getMessage();
+        if ($message !== null) {
+            $messageId = $message->getMessageId();
+        }
+        
+        return $this->messageService->sendOrEditMessage(
+            $chatId, 
+            $confirmationText, 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
     }
 
     private function isActivityExecution(string $category): bool
@@ -4215,13 +4331,33 @@ class TabelHandler implements CallbackHandlerInterface
             }
             
             error_log("📤 Sending final message: '{$message}'");
-            $response = $this->messageService->sendMessage($chatId, $message);
+            
+            // Extract messageId for delete+send effect to clean up confirmation message
+            $messageId = null;
+            $callbackMessage = $callbackQuery->getMessage();
+            if ($callbackMessage !== null) {
+                $messageId = $callbackMessage->getMessageId();
+            }
+            
+            // Use sendOrEditMessage with delete flag to remove confirmation message and send final report
+            $response = $this->messageService->sendOrEditMessage($chatId, $message, null, $messageId, 'HTML', true);
             
             // Check if user should receive reminder about notes feature
             if ($this->shouldSendNotesReminder($activityType)) {
                 error_log("📝 Sending notes reminder for activity: {$activityType}");
-                $reminderText = "💡 <b>Не забудь сообщить о важном!</b>\n\nОставь заметку для коллег через меню\n📌 <b>Заметки</b>";
-                $this->messageService->sendMessage($chatId, $reminderText);
+                $reminderText = "💡 <b>Не забудь сообщить о важном!</b>\n\nОставь заметку для коллег:";
+                $context = $this->getNotesContext($activityType);
+                $keyboard = $this->messageService->createNotesReminderKeyboard($context);
+                
+                // Extract messageId for delete+send effect
+                $messageId = null;
+                $callbackMessage = $callbackQuery->getMessage();
+                if ($callbackMessage !== null) {
+                    $messageId = $callbackMessage->getMessageId();
+                }
+                
+                // Use sendOrEditMessage with delete flag to maintain clean UI
+                $this->messageService->sendOrEditMessage($chatId, $reminderText, $keyboard, $messageId, 'HTML', true);
             }
             
             // 🔓 CRITICAL FIX: Release callback lock BEFORE returning
@@ -4313,8 +4449,28 @@ class TabelHandler implements CallbackHandlerInterface
         
         return false;
     }
+
+    /**
+     * Determine notes context based on activity type
+     * Returns: 'ПНР', 'ШМР', or 'Проект'
+     */
+    private function getNotesContext(string $activityType): string
+    {
+        // ШМР activities (contain 'ШМР' or 'Шеф')
+        if (str_contains($activityType, 'ШМР') || str_contains($activityType, 'Шеф')) {
+            return 'ШМР';
+        }
+        
+        // Project activities (contain 'Проект')
+        if (str_contains($activityType, 'Проект')) {
+            return 'Проект';
+        }
+        
+        // Default to ПНР for all other activities
+        return 'ПНР';
+    }
     
-    private function handleOtherWorkTypes(string $chatId, string $category, Conversation $conversation): ServerResponse
+    private function handleOtherWorkTypes(string $chatId, string $category, Conversation $conversation, $callbackQuery): ServerResponse
     {
         // CRITICAL MOBILE BRIGADE DEBUG
         if (str_contains($category, 'Электромонтажные') || str_contains($category, 'Сварочные') || 
@@ -4349,7 +4505,13 @@ class TabelHandler implements CallbackHandlerInterface
         // CRITICAL DEBUG: Check for exact commissioning match FIRST
         if ($category === 'Табель_Пусконаладка') {
             error_log("TabelHandler: CRITICAL - Direct commissioning match found! Category: '{$category}' - Bypassing all other logic.");
-            return $this->handleCommissioningDateSelection($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleCommissioningDateSelection($chatId, $messageId);
         }
         
         // Fix encoding issues with category
@@ -4598,7 +4760,13 @@ class TabelHandler implements CallbackHandlerInterface
         
         if ($category === 'cat_ТабУстрЗамРК' || $category === 'ТабУстрЗамРК') {
             error_log("TabelHandler: routing to RK comments elimination sub-menu");
-            return $this->handleCommissioningRKCommentsEliminationMenu($chatId, $conversation);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleCommissioningRKCommentsEliminationMenu($chatId, $conversation, $messageId);
         }
         
         // Handle supervision warranty equipment (ШМР warranty)
@@ -4610,38 +4778,74 @@ class TabelHandler implements CallbackHandlerInterface
         // Handle supervision RK elimination (ШМР RK)
         if ($category === 'Табель_ШМ_УЗ_РК') {
             error_log("TabelHandler: routing to supervision RK elimination menu");
-            return $this->handleSupervisionRKCommentsEliminationMenu($chatId, $conversation);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleSupervisionRKCommentsEliminationMenu($chatId, $conversation, $messageId);
         }
         
         if ($category === 'Табель_Пусконаладка') {
             error_log("TabelHandler: DEBUG - EXACT MATCH for commissioning button! Calling handleCommissioningDateSelection");
-            return $this->handleCommissioningDateSelection($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleCommissioningDateSelection($chatId, $messageId);
         }
         
         if ($category === 'Табель_Шеф_монтаж') {
             error_log("TabelHandler: handling supervision");
-            return $this->handleSupervisionDateSelection($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleSupervisionDateSelection($chatId, $messageId);
         }
         
         // DIRECT ELECTRICAL EQUIPMENT HANDLING - HIGHEST PRIORITY
         // Handle electrical equipment menu IMMEDIATELY (both formats)
         if ($category === 'cat_ТабЭлОб' || $category === 'Табель_Электрооборудование') {
             error_log("TabelHandler: DIRECT electrical equipment menu handling");
-            return $this->handleElectricalEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleElectricalEquipmentMenu($chatId, $messageId);
         }
         
         // DIRECT FIRE ALARM EQUIPMENT HANDLING - HIGHEST PRIORITY
         // Handle fire alarm equipment menu IMMEDIATELY (both formats)
         if ($category === 'cat_ТабПожСигн' || $category === 'Табель_ПожарнаяСигнализация') {
             error_log("TabelHandler: DIRECT fire alarm equipment menu handling");
-            return $this->handleFireAlarmEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleFireAlarmEquipmentMenu($chatId, $messageId);
         }
         
         // DIRECT ADDITIONAL WORKS HANDLING - HIGHEST PRIORITY
         // Handle additional works for electrical equipment IMMEDIATELY
         if ($category === 'cat_ТабЭлОб_ДопРаб' || $category === 'ТабЭлОб_ДопРаб' || $category === 'Табель_ДопРаб_ЭлектрОб') {
             error_log("TabelHandler: DIRECT additional works menu handling");
-            return $this->handleAdditionalWorksElectricalMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksElectricalMenu($chatId, $messageId);
         }
         
         // Handle Mobile Brigade - FIXED: Show date selection first, then project, then menu
@@ -4650,7 +4854,13 @@ class TabelHandler implements CallbackHandlerInterface
             $category === 'category_Табель_Мобильная_Бригада' || $category === 'МобильнаяБригада' ||
             str_contains($category, 'МобильнаяБригада') || str_contains($category, 'МобБриг') || $category === 'Табель_МобильнаяБригада') {
             error_log("TabelHandler: handling mobile brigade button - routing to date selection");
-            return $this->handleMobileBrigadeDateSelection($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleMobileBrigadeDateSelection($chatId, $messageId);
         }
         
         // Handle specific mobile brigade activity types - ENHANCED FOR SUBMENU UX
@@ -4664,7 +4874,13 @@ class TabelHandler implements CallbackHandlerInterface
             error_log("🎯 Keyboard created with " . count($keyboard) . " rows");
             $text = "<b>⚡ Электромонтажные работы для проекта {$projectCode}</b>\n\nВыберите процесс:";
             error_log("🎯 Sending message: {$text}");
-            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
         }
         
         // Welding works - ROUTE TO SUBMENU
@@ -4673,7 +4889,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $keyboard = $this->messageService->createWeldingWorksSubmenuKeyboard();
             $text = "<b>🔥 Сварочные работы для проекта {$projectCode}</b>\n\nВыберите процесс:";
-            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
         }
         
         // Locksmith works - ROUTE TO SUBMENU
@@ -4682,7 +4904,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $keyboard = $this->messageService->createLocksmithWorksSubmenuKeyboard();
             $text = "<b>🔧 Слесарные работы для проекта {$projectCode}</b>\n\nВыберите процесс:";
-            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
         }
         
         // Thermal insulation works - ROUTE TO SUBMENU
@@ -4691,7 +4919,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $keyboard = $this->messageService->createThermalInsulationWorksSubmenuKeyboard();
             $text = "<b>🧥 Работы по теплоизоляции для проекта {$projectCode}</b>\n\nВыберите процесс:";
-            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
         }
         
         // Painting works - ROUTE TO SUBMENU
@@ -4700,7 +4934,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $keyboard = $this->messageService->createPaintingWorksSubmenuKeyboard();
             $text = "<b>🖌️ Малярные работы для проекта {$projectCode}</b>\n\nВыберите процесс:";
-            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
         }
         
         // ======== NEW MOBILE BRIGADE SUB-ACTIVITY HANDLERS ========
@@ -4712,7 +4952,13 @@ class TabelHandler implements CallbackHandlerInterface
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Электромонтажные_Досборка', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Электромонтажные_Досборка_yes');
             error_log("⚡⚡⚡ MOBILE BRIGADE: Sending confirmation message with keyboard");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Электромонтажные_РеализацияТР' || $category === 'Электромонтажные_РеализацияТР') {
@@ -4720,7 +4966,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Электромонтажные_РеализацияТР', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Электромонтажные_РеализацияТР_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Электромонтажные_УстранениеЗамечаний' || $category === 'Электромонтажные_УстранениеЗамечаний') {
@@ -4728,7 +4980,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Электромонтажные_УстранениеЗамечаний', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Электромонтажные_УстранениеЗамечаний_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Электромонтажные_РабПоГарантии' || $category === 'Электромонтажные_РабПоГарантии') {
@@ -4736,7 +4994,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Электромонтажные_РабПоГарантии', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Электромонтажные_РабПоГарантии_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Locksmith Works Sub-Activities
@@ -4745,7 +5009,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Слесарные_Досборка', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Слесарные_Досборка_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Слесарные_РеализацияТР' || $category === 'Слесарные_РеализацияТР') {
@@ -4753,7 +5023,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Слесарные_РеализацияТР', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Слесарные_РеализацияТР_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Слесарные_УстранениеЗамечаний' || $category === 'Слесарные_УстранениеЗамечаний') {
@@ -4761,7 +5037,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Слесарные_УстранениеЗамечаний', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Слесарные_УстранениеЗамечаний_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Слесарные_РабПоГарантии' || $category === 'Слесарные_РабПоГарантии') {
@@ -4769,7 +5051,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Слесарные_РабПоГарантии', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Слесарные_РабПоГарантии_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Welding Works Sub-Activities
@@ -4778,7 +5066,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Сварочные_Досборка', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Сварочные_Досборка_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Сварочные_РеализацияТР' || $category === 'Сварочные_РеализацияТР') {
@@ -4786,7 +5080,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Сварочные_РеализацияТР', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Сварочные_РеализацияТР_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Сварочные_УстранениеЗамечаний' || $category === 'Сварочные_УстранениеЗамечаний') {
@@ -4794,7 +5094,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Сварочные_УстранениеЗамечаний', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Сварочные_УстранениеЗамечаний_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Сварочные_РабПоГарантии' || $category === 'Сварочные_РабПоГарантии') {
@@ -4802,7 +5108,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Сварочные_РабПоГарантии', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Сварочные_РабПоГарантии_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Thermal Insulation Works Sub-Activities
@@ -4811,7 +5123,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Теплоизоляция_Досборка', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Теплоизоляция_Досборка_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Теплоизоляция_РеализацияТР' || $category === 'Теплоизоляция_РеализацияТР') {
@@ -4819,7 +5137,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Теплоизоляция_РеализацияТР', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Теплоизоляция_РеализацияТР_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Теплоизоляция_УстранениеЗамечаний' || $category === 'Теплоизоляция_УстранениеЗамечаний') {
@@ -4827,7 +5151,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Теплоизоляция_УстранениеЗамечаний', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Теплоизоляция_УстранениеЗамечаний_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Теплоизоляция_РабПоГарантии' || $category === 'Теплоизоляция_РабПоГарантии') {
@@ -4835,7 +5165,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Теплоизоляция_РабПоГарантии', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Теплоизоляция_РабПоГарантии_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Painting Works Sub-Activities
@@ -4844,7 +5180,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Малярные_Досборка', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Малярные_Досборка_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Малярные_РеализацияТР' || $category === 'Малярные_РеализацияТР') {
@@ -4852,7 +5194,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Малярные_РеализацияТР', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Малярные_РеализацияТР_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Малярные_УстранениеЗамечаний' || $category === 'Малярные_УстранениеЗамечаний') {
@@ -4860,7 +5208,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Малярные_УстранениеЗамечаний', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Малярные_УстранениеЗамечаний_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         if ($category === 'Табель_Малярные_РабПоГарантии' || $category === 'Малярные_РабПоГарантии') {
@@ -4868,7 +5222,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('Малярные_РабПоГарантии', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard('category_Табель_Малярные_РабПоГарантии_yes');
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         // ======== END MOBILE BRIGADE SUB-ACTIVITY HANDLERS ========
         
@@ -4893,13 +5253,25 @@ class TabelHandler implements CallbackHandlerInterface
         // Handle Commissioning Works (short format)
         if ($category === 'ТабПНРаботы') {
             error_log("TabelHandler: handling commissioning works - showing commissioning works menu");
-            return $this->handleCommissioningWorksMenu($chatId, $conversation);
+            // Extract messageId from callbackQuery
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleCommissioningWorksMenu($chatId, $conversation, $messageId);
         }
         
         // Handle Mobile Brigade (short format) - AFTER project selection
         if ($category === 'МБ' && isset($conversation->notes['project_code'])) {
             error_log("TabelHandler: handling mobile brigade after project selection - showing mobile brigade menu");
-            return $this->handleMobileBrigadeMenu($chatId, $conversation);
+            // Extract messageId from callbackQuery
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleMobileBrigadeMenu($chatId, $conversation, $messageId);
         }
         
         // Handle electrical equipment activities
@@ -4924,7 +5296,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Additional works for electrical equipment
         if ($category === 'ТабЭлОб_ДопРаб' || $category === 'cat_ТабЭлОб_ДопРаб') {
             error_log("TabelHandler: handling additional works for electrical equipment");
-            return $this->handleAdditionalWorksElectricalMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksElectricalMenu($chatId, $messageId);
         }
 
         // Milestone confirmation for electrical equipment
@@ -4940,17 +5318,35 @@ class TabelHandler implements CallbackHandlerInterface
         // Route to sub-menus for equipment categories that have sub-activities
         if ($category === 'ТабЭлОб') {
             error_log("TabelHandler: routing to electrical equipment sub-menu");
-            return $this->handleElectricalEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleElectricalEquipmentMenu($chatId, $messageId);
         }
         
         if ($category === 'ТабАвтом') {
             error_log("TabelHandler: routing to automation equipment sub-menu");
-            return $this->handleAutomationEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAutomationEquipmentMenu($chatId, $messageId);
         }
         
         if ($category === 'ТабПожСигн') {
             error_log("TabelHandler: routing to fire alarm equipment sub-menu");
-            return $this->handleFireAlarmEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleFireAlarmEquipmentMenu($chatId, $messageId);
         }
         
         // Removed redundant electrical equipment handling - now handled at top of method
@@ -4958,55 +5354,109 @@ class TabelHandler implements CallbackHandlerInterface
         // Handle automation equipment menu (short format)
         if ($category === 'cat_ТабАвтом') {
             error_log("TabelHandler: routing to automation equipment sub-menu (short format)");
-            return $this->handleAutomationEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAutomationEquipmentMenu($chatId, $messageId);
         }
         
         // Handle heating and ventilation equipment menu (short format)
         if ($category === 'cat_ТабВентОтопл') {
             error_log("TabelHandler: routing to heating and ventilation equipment sub-menu (short format)");
-            return $this->handleHeatingVentilationEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleHeatingVentilationEquipmentMenu($chatId, $messageId);
         }
         
         // Handle heating and ventilation equipment menu (mapped format)
         if ($category === 'Табель_ОтоплениеИВентиляция') {
             error_log("TabelHandler: routing to heating and ventilation equipment sub-menu (mapped format)");
-            return $this->handleHeatingVentilationEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleHeatingVentilationEquipmentMenu($chatId, $messageId);
         }
         
         // Handle fire alarm equipment menu (short format)
         if ($category === 'cat_ТабПожСигн') {
             error_log("TabelHandler: routing to fire alarm equipment sub-menu (short format)");
-            return $this->handleFireAlarmEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleFireAlarmEquipmentMenu($chatId, $messageId);
         }
         
         // HANDLE WARRANTY EQUIPMENT MENU - HIGHEST PRIORITY
         if ($category === 'cat_ТабГарантии' || $category === 'Табель_РаботыПоГарантии' || str_starts_with($category, 'cat_ТабГарант')) {
             error_log("TabelHandler: WARRANTY equipment menu handling for: {$category}");
-            return $this->handleWarrantyEquipmentMenu($chatId, $conversation);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleWarrantyEquipmentMenu($chatId, $conversation, null, $messageId);
         }
         
         // Handle security alarm equipment menu (short format)
         if ($category === 'cat_ТабОхрСигн' || $category === 'Табель_ОхраннаяСигнализация') {
             error_log("TabelHandler: routing to security alarm equipment sub-menu (short format)");
-            return $this->handleSecurityAlarmEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleSecurityAlarmEquipmentMenu($chatId, $messageId);
         }
         
         // Handle technological equipment menu (short format)
         if ($category === 'cat_ТабТехОб' || $category === 'Табель_ТехнологическоеОборудование') {
             error_log("TabelHandler: routing to technological equipment sub-menu (short format)");
-            return $this->handleTechnologicalEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleTechnologicalEquipmentMenu($chatId, $messageId);
         }
         
         // Handle project activity menu
         if ($category === 'Табель_ПроектнаяДеятельность') {
             error_log("TabelHandler: routing to project activity menu");
-            return $this->handleProjectActivityMenu($chatId, $conversation);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleProjectActivityMenu($chatId, $conversation, $messageId);
         }
         
         // Handle supervision project activity menu
         if ($category === 'Табель_ПроектнаяДеятельность_ШМР') {
             error_log("TabelHandler: routing to supervision project activity menu");
-            return $this->handleSupervisionProjectActivityMenu($chatId, $conversation);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleSupervisionProjectActivityMenu($chatId, $conversation, $messageId);
         }
         
         // ======= NEW SUPERVISION WORKS HIERARCHICAL ROUTING =======
@@ -5524,7 +5974,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Handle direct electrical equipment callback (without cat_ prefix)
         if ($category === 'Электрооборудование') {
             error_log("TabelHandler: routing to electrical equipment sub-menu (direct format)");
-            return $this->handleElectricalEquipmentMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleElectricalEquipmentMenu($chatId, $messageId);
         }
         
         // Handle simple commissioning activities that don't have sub-menus
@@ -5560,13 +6016,28 @@ class TabelHandler implements CallbackHandlerInterface
             $confirmationText = $this->tabelEntry->getConfirmationMessage($activityType, $projectCode);
             
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_{$category}_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Handle Current Activity (Текущая деятельность)
         if ($category === 'Табель_Текущая') {
             error_log("TabelHandler: handling current activity");
-            return $this->handleCurrentActivityDateSelection($chatId);
+            // Extract messageId from callbackQuery for menu cleanup
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+                error_log("TabelHandler: extracted messageId: {$messageId}");
+            } else {
+                error_log("TabelHandler: WARNING - message is null, cannot extract messageId");
+            }
+            return $this->handleCurrentActivityDateSelection($chatId, $messageId);
         }
         
         // Handle warranty equipment activities (terminal activities - direct to confirmation)
@@ -5577,7 +6048,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РабГарантии_ЭлектрОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_Гарантии_ЭлектрОб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Warranty work for measuring instruments
@@ -5586,7 +6063,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РабГарантии_СрИзм', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_Гарантии_СрИзм_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Warranty work for pump equipment
@@ -5595,7 +6078,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РабГарантии_НасОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_Гарантии_НасОб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Warranty work for pipeline fittings
@@ -5604,7 +6093,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РабГарантии_ТрубАрм', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_Гарантии_ТрубАрм_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Warranty work for actuators
@@ -5613,7 +6108,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РабГарантии_ИспМех', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_Гарантии_ИспМех_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Warranty work for controller equipment
@@ -5622,7 +6123,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РабГарантии_КонтрОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_Гарантии_КонтрОб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Warranty work for other equipment
@@ -5636,7 +6143,13 @@ class TabelHandler implements CallbackHandlerInterface
             // Prompt user for custom input
             $text = "<b>📦 Прочее оборудование - Работы по гарантии</b>\n\n" .
                     "Пожалуйста, введите наименование оборудования:";
-            return $this->messageService->sendMessage($chatId, $text);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $text, null, $messageId, 'HTML', true);
         }
         
         // URGENT: Test handler for supervision prep works (alternative callback)
@@ -5650,7 +6163,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Handle Supervision Work Types (exclude warranty and RK - they have specific handlers)
         if ($category === 'Табель_ШМР') {
             error_log("TabelHandler: handling supervision works menu: {$category}");
-            return $this->handleSupervisionWorksMenu($chatId, $conversation);
+            // Extract messageId from callbackQuery
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleSupervisionWorksMenu($chatId, $conversation, $messageId);
         }
         
         if ($category === 'Табель_ШМ_Простой') {
@@ -5689,7 +6208,13 @@ class TabelHandler implements CallbackHandlerInterface
             
             $callbackData = $shortFormatMap[$strippedCategory] ?? "{$category}_yes";
             $keyboard = $this->messageService->createConfirmationKeyboard($callbackData);
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
         
         // Handle work type buttons that appear after date and project selection
@@ -5718,7 +6243,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('ИзмСхемПодкл_ЭлектрОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабЭлОб_ИзмСхПд_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable installation for electrical equipment
@@ -5727,7 +6258,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтажКабЛиний_ЭлектрОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабЭлОб_МонтКбЛн_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable wiring for electrical equipment
@@ -5736,7 +6273,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РасклКабЛиний_ЭлектрОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабЭлОб_РаскКбЛн_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Equipment installation for electrical equipment
@@ -5745,7 +6288,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтОб_ЭлектрОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабЭлОб_МонтОб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Handle other works (Прочее) for electrical equipment - prompt for custom input
@@ -5816,7 +6365,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Additional works for metrology equipment
         if ($category === 'ТабМетрол_ДопРаб' || $category === 'cat_ТабМетрол_ДопРаб' || $category === 'Табель_ДопРаб_Метрол') {
             error_log("TabelHandler: handling additional works for metrology equipment");
-            return $this->handleAdditionalWorksMetrologyMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksMetrologyMenu($chatId, $messageId);
         }
 
         // Handle metrology equipment additional works activities
@@ -5826,7 +6381,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('ИзмКонф_Метрол', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабМетрол_ИзмКонф_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Calibration/verification for metrology equipment
@@ -5835,7 +6396,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('КалПов_Метрол', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабМетрол_КалПов_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // KMH SI for metrology equipment
@@ -5844,7 +6411,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('КМХ_Метрол', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабМетрол_КМХ_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Characteristics correction for metrology equipment
@@ -5853,7 +6426,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('КоррХар_Метрол', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабМетрол_КоррХар_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Handle other works (Прочее) for metrology equipment
@@ -5885,7 +6464,13 @@ class TabelHandler implements CallbackHandlerInterface
             error_log("TabelHandler: CRITICAL DEBUG - handling additional works for automation equipment");
             error_log("TabelHandler: CRITICAL DEBUG - category matched: {$category}");
             error_log("TabelHandler: CRITICAL DEBUG - calling handleAdditionalWorksAutomationMenu");
-            return $this->handleAdditionalWorksAutomationMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksAutomationMenu($chatId, $messageId);
         }
         
         // Milestone confirmation for automation equipment
@@ -5909,7 +6494,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Additional works for fire alarm equipment
         if ($category === 'ТабПожСигн_ДопРаб' || $category === 'cat_ТабПожСигн_ДопРаб' || $category === 'Табель_ДопРаб_ПожСигн') {
             error_log("TabelHandler: handling additional works for fire alarm equipment");
-            return $this->handleAdditionalWorksFireAlarmMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksFireAlarmMenu($chatId, $messageId);
         }
         
         // Milestone confirmation for fire alarm equipment
@@ -5942,7 +6533,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('ИзмСх_Автом', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабАвтом_ИзмСх_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable installation for automation equipment
@@ -5951,7 +6548,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтКб_Автом', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабАвтом_МонтКб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable wiring for automation equipment
@@ -5960,7 +6563,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РаскКб_Автом', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабАвтом_РаскКб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Equipment installation for automation equipment
@@ -5969,7 +6578,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтАСУ_Автом', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабАвтом_МонтАСУ_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Remote software commissioning for automation equipment
@@ -5978,7 +6593,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('УдалПО_Автом', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабАвтом_УдалПО_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Handle other works (Прочее) for automation equipment - both formats
@@ -6123,7 +6744,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Additional works for security alarm equipment
         if ($category === 'ТабОхрСиг_ДопРаб' || $category === 'cat_ТабОхрСиг_ДопРаб' || $category === 'Табель_ДопРаб_ОхрСигн') {
             error_log("TabelHandler: handling additional works for security alarm equipment");
-            return $this->handleAdditionalWorksSecurityAlarmMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksSecurityAlarmMenu($chatId, $messageId);
         }
         
         // Milestone confirmation for security alarm equipment
@@ -6164,7 +6791,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Additional works for heating and ventilation equipment
         if ($category === 'ТабВентОтопл_ДопРаб' || $category === 'cat_ТабВентОтопл_ДопРаб' || $category === 'Табель_ДопРаб_ВентОтопл') {
             error_log("TabelHandler: handling additional works for heating and ventilation equipment");
-            return $this->handleAdditionalWorksHeatingVentilationMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksHeatingVentilationMenu($chatId, $messageId);
         }
         
         // Milestone confirmation for heating and ventilation equipment
@@ -6208,7 +6841,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Additional works for technological equipment
         if ($category === 'ТабТехОб_ДопРаб' || $category === 'cat_ТабТехОб_ДопРаб' || $category === 'Табель_ДопРаб_ТехОб') {
             error_log("TabelHandler: handling additional works for technological equipment");
-            return $this->handleAdditionalWorksTechnologicalMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksTechnologicalMenu($chatId, $messageId);
         }
 
         // Milestone confirmation for technological equipment
@@ -6227,7 +6866,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('ДемАрм_ТехОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабТехОб_ДемАрм_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Dismantling/revision of technological equipment
@@ -6236,7 +6881,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('ДемОб_ТехОб', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабТехОб_ДемОб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Handle other works (Прочее) for technological equipment - prompt for custom input
@@ -6320,7 +6971,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтКб_ВентОтопл', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабВентОтопл_МонтКб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable wiring for heating and ventilation equipment
@@ -6329,7 +6986,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РаскКб_ВентОтопл', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабВентОтопл_РаскКб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Equipment installation for heating and ventilation equipment
@@ -6338,7 +7001,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтАСУ_ВентОтопл', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабВентОтопл_МонтАСУ_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Remote software commissioning for heating and ventilation equipment
@@ -6347,7 +7016,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('УдалПО_ВентОтопл', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабВентОтопл_УдалПО_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Handle other works (Прочее) for heating and ventilation equipment - both formats
@@ -6395,7 +7070,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('ИзмСх_ОхрСигн', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабОхрСиг_ИзмСх_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable installation for security alarm equipment
@@ -6404,7 +7085,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтКб_ОхрСигн', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабОхрСиг_МонтКб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Cable wiring for security alarm equipment
@@ -6413,13 +7100,25 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('РаскКб_ОхрСигн', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабОхрСиг_РаскКб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // Additional works for security alarm equipment
         if ($category === 'ТабОхрСиг_ДопРаб' || $category === 'cat_ТабОхрСиг_ДопРаб' || $category === 'Табель_ДопРаб_ОхрСигн') {
             error_log("TabelHandler: handling additional works for security alarm equipment");
-            return $this->handleAdditionalWorksSecurityAlarmMenu($chatId);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleAdditionalWorksSecurityAlarmMenu($chatId, $messageId);
         }
         
         // Equipment installation for security alarm equipment
@@ -6428,7 +7127,13 @@ class TabelHandler implements CallbackHandlerInterface
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
             $confirmationText = $this->tabelEntry->getConfirmationMessage('МонтОб_ОхрСигн', $projectCode);
             $keyboard = $this->messageService->createConfirmationKeyboard("cat_ТабОхрСиг_МонтОб_yes");
-            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage($chatId, $confirmationText, $keyboard, $messageId, 'HTML', true);
         }
 
         // CRITICAL: Check for activity type AFTER specific handlers to prevent premature confirmation
@@ -6461,109 +7166,148 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Handle current activity date selection
      */
-    private function handleCurrentActivityDateSelection(string $chatId): ServerResponse
+    private function handleCurrentActivityDateSelection(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createDateSelectionKeyboard('category_Табель_Текущая');
-        return $this->messageService->sendMessage($chatId, '<b>Выберите дату текущей деятельности</b>', $keyboard);
+        return $this->messageService->sendOrEditMessage(
+            $chatId, 
+            '<b>Выберите дату текущей деятельности</b>', 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
     }
 
     /**
      * Handle mobile brigade date selection
      */
-    private function handleMobileBrigadeDateSelection(string $chatId): ServerResponse
+    private function handleMobileBrigadeDateSelection(string $chatId, ?int $messageId = null): ServerResponse
     {
         error_log("TabelHandler: handleMobileBrigadeDateSelection called");
         $keyboard = $this->messageService->createDateSelectionKeyboard('category_Табель_МобБриг');
         error_log("TabelHandler: created date selection keyboard with " . count($keyboard) . " rows");
-        $result = $this->messageService->sendMessage($chatId, '👷‍♂️ <b>Выберите дату для Мобильной бригады</b>', $keyboard);
-        error_log("TabelHandler: sendMessage returned");
+        $result = $this->messageService->sendOrEditMessage(
+            $chatId, 
+            '👷‍♂️ <b>Выберите дату для Мобильной бригады</b>', 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
+        error_log("TabelHandler: sendOrEditMessage returned");
         return $result;
     }
 
     /**
      * Handle mobile brigade menu (after date and project selection)
      */
-    private function handleMobileBrigadeMenu(string $chatId, Conversation $conversation): ServerResponse
+    private function handleMobileBrigadeMenu(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createMobileBrigadeKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId,
             "<b>👷‍♂️ Мобильная бригада для проекта {$projectCode}</b>\n\nВыберите тип работ:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
-    private function handleTKPSubtypesMenu(string $chatId): ServerResponse
+    private function handleTKPSubtypesMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createTKPSubtypesKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>📋 Выберите тип Подготовки материала к ТКП</b>',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
-    private function handleBackToCurrentActivity(string $chatId, Conversation $conversation): ServerResponse
+    private function handleBackToCurrentActivity(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $date = $conversation->notes['tabel_data'] ?? date('d.m.Y');
         $keyboard = $this->messageService->createCurrentActivityKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>💼 Табель - Текущая деятельность за {$date}</b>",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle back to commissioning menu
      */
-    private function handleBackToCommissioning(string $chatId, Conversation $conversation): ServerResponse
+    private function handleBackToCommissioning(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createCommissioningKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>⚙️ Табель - Пусконаладка для проекта {$projectCode}</b>",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle back to supervision menu
      */
-    private function handleBackToSupervision(string $chatId, Conversation $conversation): ServerResponse
+    private function handleBackToSupervision(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createSupervisionKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>🔧 Табель - Шеф-монтаж для проекта {$projectCode}</b>",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle commissioning date selection
      */
-    private function handleCommissioningDateSelection(string $chatId): ServerResponse
+    private function handleCommissioningDateSelection(string $chatId, ?int $messageId = null): ServerResponse
     {
         // Используем короткий префикс для избежания ограничения в 64 байта
         $keyboard = $this->messageService->createDateSelectionKeyboard('category_Табель_ПНЛ');
-        return $this->messageService->sendMessage($chatId, '⚙️ <b>Выберите дату для Пусконаладки</b>', $keyboard);
+        return $this->messageService->sendOrEditMessage(
+            $chatId, 
+            '⚙️ <b>Выберите дату для Пусконаладки</b>', 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
     }
     
     /**
      * Handle commissioning works menu
      */
-    private function handleCommissioningWorksMenu(string $chatId, Conversation $conversation): ServerResponse
+    private function handleCommissioningWorksMenu(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createCommissioningWorksKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>⚙️ Пусконаладочные работы для проекта {$projectCode}</b>\n\nВыберите тип работ:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
@@ -6576,42 +7320,51 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Handle project activity menu
      */
-    private function handleProjectActivityMenu(string $chatId, Conversation $conversation): ServerResponse
+    private function handleProjectActivityMenu(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createProjectActivityKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>📂 Проектная деятельность для проекта {$projectCode}</b>\n\nВыберите тип проектной деятельности:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle supervision project activity menu
      */
-    private function handleSupervisionProjectActivityMenu(string $chatId, Conversation $conversation): ServerResponse
+    private function handleSupervisionProjectActivityMenu(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createSupervisionProjectActivityKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>📂 Проектная деятельность для проекта {$projectCode}</b>\n\nВыберите тип проектной деятельности:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle supervision works menu
      */
-    private function handleSupervisionWorksMenu(string $chatId, Conversation $conversation): ServerResponse
+    private function handleSupervisionWorksMenu(string $chatId, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
         $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
         $keyboard = $this->messageService->createSupervisionWorksKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>🔧 Шеф-монтажные работы для проекта {$projectCode}</b>\n\nВыберите тип работ:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
@@ -6628,11 +7381,18 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Handle supervision (Шеф-монтаж) date selection
      */
-    private function handleSupervisionDateSelection(string $chatId): ServerResponse
+    private function handleSupervisionDateSelection(string $chatId, ?int $messageId = null): ServerResponse
     {
         // Используем короткий префикс для избежания ограничения в 64 байта
         $keyboard = $this->messageService->createDateSelectionKeyboard('category_Табель_ШМ');
-        return $this->messageService->sendMessage($chatId, '🔧 <b>Выберите дату для Шеф-монтажа</b>', $keyboard);
+        return $this->messageService->sendOrEditMessage(
+            $chatId, 
+            '🔧 <b>Выберите дату для Шеф-монтажа</b>', 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
     }
 
     /**
@@ -6661,7 +7421,13 @@ class TabelHandler implements CallbackHandlerInterface
         // Level 1: Main categories (1-6)
         if ($category === 'Табель_Простой' || $category === 'Табель_ШМ_Простой' || 
             $category === 'Табель_Простой' || $category === 'Табель_ШМ_Простой' || $category === 'Табель_МобБриг_Простой') {
-            return $this->handleIdleMainCategories($chatId, $category);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleIdleMainCategories($chatId, $category, $messageId);
         }
         
         // Обработка подтверждений простоя
@@ -6677,7 +7443,13 @@ class TabelHandler implements CallbackHandlerInterface
             $isSupervision = ($idleType === 'ШМ_');
             $isMobileBrigade = ($idleType === 'МобБриг_');
             error_log("TabelHandler: Processing subcategory {$categoryNumber}, supervision: " . ($isSupervision ? 'yes' : 'no') . ", mobile brigade: " . ($isMobileBrigade ? 'yes' : 'no'));
-            return $this->handleIdleSubcategories($chatId, $categoryNumber, $isSupervision, $isMobileBrigade);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->handleIdleSubcategories($chatId, $categoryNumber, $isSupervision, $isMobileBrigade, $messageId);
         }
         
         // Level 3: Sub-subcategories (double dash) or final selection
@@ -6703,7 +7475,13 @@ class TabelHandler implements CallbackHandlerInterface
             
             // Check if this subcategory has sub-subcategories
             if ($this->hasSubSubcategories($categoryNumber, $subcategory)) {
-                return $this->handleIdleSubSubcategories($chatId, $categoryNumber, $subcategory, $isSupervision, $isMobileBrigade);
+                // Extract messageId for delete+send effect
+                $messageId = null;
+                $message = $callbackQuery->getMessage();
+                if ($message !== null) {
+                    $messageId = $message->getMessageId();
+                }
+                return $this->handleIdleSubSubcategories($chatId, $categoryNumber, $subcategory, $isSupervision, $isMobileBrigade, $messageId);
             } else {
                 // This is a final selection - treat as activity confirmation
                 return $this->handleIdleFinalSelection($callbackQuery, $category, $conversation);
@@ -6721,7 +7499,7 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Show main idle categories (Level 1)
      */
-    private function handleIdleMainCategories(string $chatId, string $category): ServerResponse
+    private function handleIdleMainCategories(string $chatId, string $category, ?int $messageId = null): ServerResponse
     {
         $isSupervision = str_contains($category, 'ШМ_');
         $isMobileBrigade = str_contains($category, 'МобБриг_');
@@ -6764,13 +7542,20 @@ class TabelHandler implements CallbackHandlerInterface
             ]
         ];
         
-        return $this->messageService->sendMessage($chatId, "<b>{$title}</b>\n\nВыберите причину простоя:", $keyboard);
+        return $this->messageService->sendOrEditMessage(
+            $chatId, 
+            "<b>{$title}</b>\n\nВыберите причину простоя:", 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
     }
 
     /**
      * Show subcategories for a specific main category (Level 2)
      */
-    private function handleIdleSubcategories(string $chatId, int $categoryNumber, bool $isSupervision, bool $isMobileBrigade = false): ServerResponse
+    private function handleIdleSubcategories(string $chatId, int $categoryNumber, bool $isSupervision, bool $isMobileBrigade = false, ?int $messageId = null): ServerResponse
     {
         // Debug logging only
         error_log("TabelHandler: handleIdleSubcategories called for category {$categoryNumber}, supervision: " . ($isSupervision ? 'yes' : 'no') . ", mobile brigade: " . ($isMobileBrigade ? 'yes' : 'no'));
@@ -6861,10 +7646,13 @@ class TabelHandler implements CallbackHandlerInterface
             ['text' => '⬅️ Назад к категориям', 'callback_data' => "category_{$backPrefix}"]
         ];
         
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>{$category['title']}</b>\n\nВыберите подкатегорию:", 
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
@@ -6885,7 +7673,7 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Show sub-subcategories (Level 3)
      */
-    private function handleIdleSubSubcategories(string $chatId, int $categoryNumber, string $subcategory, bool $isSupervision, bool $isMobileBrigade = false): ServerResponse
+    private function handleIdleSubSubcategories(string $chatId, int $categoryNumber, string $subcategory, bool $isSupervision, bool $isMobileBrigade = false, ?int $messageId = null): ServerResponse
     {
         if ($isMobileBrigade) {
             $prefix = 'Табель_МобБриг_Простой';
@@ -6941,10 +7729,13 @@ class TabelHandler implements CallbackHandlerInterface
             ['text' => '⬅️ Назад', 'callback_data' => "category_{$prefix}_{$categoryNumber}"]
         ];
         
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>{$subSubcategory['title']}</b>\n\nВыберите раздел:", 
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
@@ -6986,7 +7777,20 @@ class TabelHandler implements CallbackHandlerInterface
             // Show project selection
             $text = "<b>Табель - Простой, выбор проекта</b>";
             $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
-            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            // Extract messageId for delete+send effect
+            $messageId = null;
+            $message = $callbackQuery->getMessage();
+            if ($message !== null) {
+                $messageId = $message->getMessageId();
+            }
+            return $this->messageService->sendOrEditMessage(
+                $chatId, 
+                $text, 
+                $keyboard,
+                $messageId,
+                'HTML',
+                true // Delete old message and send new for clean effect
+            );
         }
         
         // Store the detailed idle reason in conversation notes for confirmation
@@ -6999,7 +7803,21 @@ class TabelHandler implements CallbackHandlerInterface
         
         $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_{$activityType}_yes");
         
-        return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+        // Extract messageId for delete+send effect
+        $messageId = null;
+        $message = $callbackQuery->getMessage();
+        if ($message !== null) {
+            $messageId = $message->getMessageId();
+        }
+        
+        return $this->messageService->sendOrEditMessage(
+            $chatId, 
+            $confirmationText, 
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
+        );
     }
 
     /**
@@ -7498,182 +8316,224 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Handle electrical equipment menu
      */
-    private function handleElectricalEquipmentMenu(string $chatId): ServerResponse
+    private function handleElectricalEquipmentMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createElectricalEquipmentKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>⚡ Электрооборудование</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle automation equipment menu
      */
-    private function handleAutomationEquipmentMenu(string $chatId): ServerResponse
+    private function handleAutomationEquipmentMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAutomationEquipmentKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🤖 Автоматизация</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle heating and ventilation equipment menu
      */
-    private function handleHeatingVentilationEquipmentMenu(string $chatId): ServerResponse
+    private function handleHeatingVentilationEquipmentMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createHeatingVentilationEquipmentKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>❄️ Отопление и вентиляция</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle fire alarm equipment menu
      */
-    private function handleFireAlarmEquipmentMenu(string $chatId): ServerResponse
+    private function handleFireAlarmEquipmentMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createFireAlarmEquipmentKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🔥 Пожарная сигнализация</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle security alarm equipment menu
      */
-    private function handleSecurityAlarmEquipmentMenu(string $chatId): ServerResponse
+    private function handleSecurityAlarmEquipmentMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createSecurityAlarmEquipmentKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛡️ Охранная сигнализация</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle technological equipment menu
      */
-    private function handleTechnologicalEquipmentMenu(string $chatId): ServerResponse
+    private function handleTechnologicalEquipmentMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createTechnologicalEquipmentKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>⚙️ Технологическое оборудование</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle metrology menu
      */
-    private function handleMetrologyMenu(string $chatId): ServerResponse
+    private function handleMetrologyMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createMetrologyKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>📏 Метрология</b> Выберите тип работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle additional works for electrical equipment
      */
-    private function handleAdditionalWorksElectricalMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksElectricalMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksElectricalKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Электрооборудование</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle additional works for technological equipment
      */
-    private function handleAdditionalWorksTechnologicalMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksTechnologicalMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksTechnologicalKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Технологическое оборудование</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle additional works for fire alarm equipment
      */
-    private function handleAdditionalWorksFireAlarmMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksFireAlarmMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksFireAlarmKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Пожарная сигнализация</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle additional works for automation equipment
      */
-    private function handleAdditionalWorksAutomationMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksAutomationMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksAutomationKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Автоматизация</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
     
     /**
      * Handle additional works for heating and ventilation equipment
      */
-    private function handleAdditionalWorksHeatingVentilationMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksHeatingVentilationMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksHeatingVentilationKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Отопление и вентиляция</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle additional works for security alarm equipment
      */
-    private function handleAdditionalWorksSecurityAlarmMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksSecurityAlarmMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksSecurityAlarmKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Охранная сигнализация</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle additional works for metrology
      */
-    private function handleAdditionalWorksMetrologyMenu(string $chatId): ServerResponse
+    private function handleAdditionalWorksMetrologyMenu(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createAdditionalWorksMetrologyKeyboard();
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             '<b>🛠️ Дополнительные работы - Метрология</b> Выберите тип дополнительных работ:',
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
@@ -8069,7 +8929,7 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Handle warranty equipment menu
      */
-    private function handleWarrantyEquipmentMenu(string $chatId, Conversation $conversation = null, string $context = null): ServerResponse
+    private function handleWarrantyEquipmentMenu(string $chatId, Conversation $conversation = null, string $context = null, ?int $messageId = null): ServerResponse
     {
         error_log("🔧 WARRANTY DEBUG: handleWarrantyEquipmentMenu called");
         
@@ -8088,24 +8948,30 @@ class TabelHandler implements CallbackHandlerInterface
         
         $keyboard = $this->messageService->createWarrantyEquipmentKeyboard($context);
         error_log("🔧 WARRANTY DEBUG: warranty equipment keyboard created with " . count($keyboard) . " rows");
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>🛡️ Работы по гарантии</b>\n\nВыберите тип оборудования:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
     /**
      * Handle RK comments elimination menu for commissioning department
      */
-    private function handleCommissioningRKCommentsEliminationMenu(string $chatId, ?Conversation $conversation = null): ServerResponse
+    private function handleCommissioningRKCommentsEliminationMenu(string $chatId, ?Conversation $conversation = null, ?int $messageId = null): ServerResponse
     {
         // For commissioning department, always use commissioning context
         $keyboard = $this->messageService->createEliminationRemarksRKKeyboard('commissioning');
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>🔧 Устранения замечаний РК</b>\n\nВыберите раздел:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 
@@ -8153,14 +9019,17 @@ class TabelHandler implements CallbackHandlerInterface
     /**
      * Handle RK comments elimination menu for supervision department
      */
-    private function handleSupervisionRKCommentsEliminationMenu(string $chatId, ?Conversation $conversation = null): ServerResponse
+    private function handleSupervisionRKCommentsEliminationMenu(string $chatId, ?Conversation $conversation = null, ?int $messageId = null): ServerResponse
     {
         // For supervision department, always use supervision context
         $keyboard = $this->messageService->createEliminationRemarksRKKeyboard('supervision');
-        return $this->messageService->sendMessage(
+        return $this->messageService->sendOrEditMessage(
             $chatId, 
             "<b>🔧 Устранения замечаний РК</b>\n\nВыберите раздел:",
-            $keyboard
+            $keyboard,
+            $messageId,
+            'HTML',
+            true // Delete old message and send new for clean effect
         );
     }
 }

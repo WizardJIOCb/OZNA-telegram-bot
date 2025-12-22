@@ -40,6 +40,7 @@ class MainMenuHandler implements CallbackHandlerInterface
     {
         $chatId = $callbackQuery->getMessage()->getChat()->getId();
         $userId = $callbackQuery->getFrom()->getId();
+        $messageId = $callbackQuery->getMessage()->getMessageId();
         
         error_log("MainMenuHandler: handle called with category: '{$category}' for user: {$userId}");
         
@@ -50,7 +51,7 @@ class MainMenuHandler implements CallbackHandlerInterface
         // Always show main menu when this callback is triggered
         if ($category === 'Главное') {
             error_log("MainMenuHandler: showing main menu for user: {$userId}");
-            return $this->showMainMenu($chatId, $userId);
+            return $this->showMainMenu($chatId, $userId, $messageId);
         }
         
         // Handle access request
@@ -72,82 +73,34 @@ class MainMenuHandler implements CallbackHandlerInterface
 
     /**
      * Show main menu based on user access level
+     * This should match exactly what /start command does - just update reply keyboard, no inline buttons
      */
-    private function showMainMenu(string $chatId, int $userId): ServerResponse
+    private function showMainMenu(string $chatId, int $userId, int $messageId): ServerResponse
     {
         // Get user access level
         $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
         
-        // For guests (level 0), show limited menu
-        if ($userAccessLevel == 0) {
-            $keyboard = [
-                [
-                    ['text' => '👤 Профиль', 'callback_data' => 'category_Профиль']
-                ],
-                [
-                    ['text' => '❓ Помощь', 'callback_data' => 'category_Помощь']
-                ],
-                [
-                    ['text' => '🔐 Запросить доступ', 'callback_data' => 'category_Админка_ЗапросДоступ']
-                ]
-            ];
-            
-            $text = "<b>🏠 Главное меню</b>\n\n(для вызова этого меню в любой момент отправьте /start)\n\n🔐 Нажмите \"Запросить доступ\" для получения расширенных прав.";
-            
-            // Also update the reply keyboard (persistent menu) for guests
+        // Create reply keyboard based on user access level (same as /start command)
+        if ($userAccessLevel == 0) { // Guest level
+            // Limited menu for guests - use the service method to ensure consistency
             $replyKeyboard = $this->messageService->createGuestMainMenuReplyKeyboard();
-            $text = $this->comprehensiveEncodingFix($text);
-            return $this->messageService->sendMessageWithReplyKeyboard($chatId, $text, $replyKeyboard);
         } else {
-            // For other users, show full menu
-            $keyboard = [
-                [
-                    ['text' => '📊 Табель', 'callback_data' => 'category_Табель']
-                ],
-                [
-                    ['text' => '👤 Профиль', 'callback_data' => 'category_Профиль']
-                ]
-            ];
-            
-            // Add projects menu for all registered users (level 1+)
-            if ($userAccessLevel >= DatabaseService::ACCESS_LEVEL_USER) {
-                $keyboard[] = [
-                    ['text' => '📁 Проекты', 'callback_data' => 'category_Проекты']
-                ];
-            }
-            
-            // Add supervisor menu for supervisors and above
-            if ($userAccessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
-                $keyboard[] = [
-                    ['text' => '📋 Супервайзер', 'callback_data' => 'category_Супервайзер']
-                ];
-            }
-            
-            // Add admin menu for supervisors and above (level 2+)
-            if ($userAccessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
-                $keyboard[] = [
-                    ['text' => '⚙️ Админка', 'callback_data' => 'category_Админка']
-                ];
-            }
-            
-            // Add project management button for supervisors and above (level 2+)
-            if ($userAccessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
-                $keyboard[] = [
-                    ['text' => '🛠️ Управление проектом', 'callback_data' => 'category_УправлениеПроектом']
-                ];
-            }
-            
-            $keyboard[] = [
-                ['text' => '❓ Помощь', 'callback_data' => 'category_Помощь']
-            ];
-            
-            $text = "<b>🏠 Главное меню</b>\n\n(для вызова этого меню в любой момент отправьте /start)";
-            
-            // Also update the reply keyboard (persistent menu) for registered users
+            // Full menu for other users - pass access level to determine if Adminка button should be shown
             $replyKeyboard = $this->messageService->createMainMenuReplyKeyboard($userAccessLevel);
-            $text = $this->comprehensiveEncodingFix($text);
-            return $this->messageService->sendMessageWithReplyKeyboard($chatId, $text, $replyKeyboard);
         }
+        
+        // Simple text message - same as /start command
+        $text = "<b>🏠 Главное меню</b>\r\n\r\n🔄 Для вызова этого меню отправьте /start";
+        
+        $text = $this->comprehensiveEncodingFix($text);
+        
+        // Send message with reply keyboard (no inline keyboard!)
+        // The reply keyboard will update the persistent menu at the bottom of the chat
+        return $this->messageService->sendMessageWithReplyKeyboard(
+            $chatId,
+            $text,
+            $replyKeyboard
+        );
     }
     
     /**
