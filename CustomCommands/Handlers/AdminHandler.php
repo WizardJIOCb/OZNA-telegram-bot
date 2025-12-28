@@ -384,7 +384,13 @@ class AdminHandler implements CallbackHandlerInterface
         }
 
         if ($category === 'Админка_Проекты_Список') {
-            return $this->showProjectList($chatId);
+            return $this->showProjectList($chatId, 1);
+        }
+        
+        // Handle pagination for admin project list
+        if (str_starts_with($category, 'proj_admin_list_page_')) {
+            $page = (int)str_replace('proj_admin_list_page_', '', $category);
+            return $this->showProjectList($chatId, $page);
         }
 
         if ($category === 'Админка_Проекты_Добавить') {
@@ -392,7 +398,13 @@ class AdminHandler implements CallbackHandlerInterface
         }
 
         if ($category === 'Админка_Проекты_Удалить') {
-            return $this->showDeleteProjectMenu($chatId);
+            return $this->showDeleteProjectMenu($chatId, 1);
+        }
+        
+        // Handle pagination for delete project menu
+        if (str_starts_with($category, 'proj_delete_list_page_')) {
+            $page = (int)str_replace('proj_delete_list_page_', '', $category);
+            return $this->showDeleteProjectMenu($chatId, $page);
         }
 
         $text = 'Функция в разработке';
@@ -408,7 +420,7 @@ class AdminHandler implements CallbackHandlerInterface
         return $this->messageService->sendMessage($chatId, $text, $keyboard);
     }
 
-    private function showProjectList(string $chatId): ServerResponse
+    private function showProjectList(string $chatId, int $page = 1): ServerResponse
     {
         // Use ProjectSelector to get all projects including pending ones
         $databaseService = $this->adminService->getDatabaseService();
@@ -416,18 +428,61 @@ class AdminHandler implements CallbackHandlerInterface
             $databaseService
         );
         $projects = $projectSelector->getAllProjectsIncludingPending();
-        $text = "📋 <b>Список проектов:</b>\n\n";
         
         if (empty($projects)) {
+            $text = "📋 <b>Список проектов:</b>\n\n";
             $text .= "Проекты не найдены.";
-        } else {
-            $text .= "<i>Показаны все проекты (включая ожидающие модерацию)</i>\n\n";
-            foreach ($projects as $project) {
-                $text .= "• {$project}\n";
-            }
+            
+            $keyboard = $this->adminService->createBackToProjectsKeyboard();
+            $text = $this->ensureUtf8Encoding($text);
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
         }
-
-        $keyboard = $this->adminService->createBackToProjectsKeyboard();
+        
+        // PAGINATION: 33 projects per page
+        $perPage = 33;
+        $totalProjects = count($projects);
+        $totalPages = (int)ceil($totalProjects / $perPage);
+        
+        // Check if page is valid
+        if ($page < 1) $page = 1;
+        if ($page > $totalPages) $page = $totalPages;
+        
+        // Get projects for current page
+        $offset = ($page - 1) * $perPage;
+        $projectsOnPage = array_slice($projects, $offset, $perPage);
+        
+        $text = "📋 <b>Список проектов:</b>\n\n";
+        $text .= "<i>Показаны все проекты (включая ожидающие модерацию)</i>\n\n";
+        $text .= "Страница {$page} из {$totalPages} (Всего: {$totalProjects} проектов)\n\n";
+        
+        foreach ($projectsOnPage as $project) {
+            $text .= "• {$project}\n";
+        }
+        
+        // Create keyboard with pagination
+        $keyboard = [];
+        
+        // Add pagination navigation buttons
+        if ($totalPages > 1) {
+            $navRow = [];
+            
+            if ($page > 1) {
+                $navRow[] = ['text' => '⬅️ Назад', 'callback_data' => "proj_admin_list_page_" . ($page - 1)];
+            }
+            
+            $navRow[] = ['text' => "📖 {$page}/{$totalPages}", 'callback_data' => "proj_admin_list_page_{$page}"];
+            
+            if ($page < $totalPages) {
+                $navRow[] = ['text' => '➡️ Вперед', 'callback_data' => "proj_admin_list_page_" . ($page + 1)];
+            }
+            
+            $keyboard[] = $navRow;
+        }
+        
+        // Add back button
+        $backKeyboard = $this->adminService->createBackToProjectsKeyboard();
+        $keyboard[] = $backKeyboard[0];
+        
         $text = $this->ensureUtf8Encoding($text);
         return $this->messageService->sendMessage($chatId, $text, $keyboard);
     }
@@ -447,7 +502,7 @@ class AdminHandler implements CallbackHandlerInterface
         return $this->messageService->sendMessage($chatId, $text);
     }
 
-    private function showDeleteProjectMenu(string $chatId): ServerResponse
+    private function showDeleteProjectMenu(string $chatId, int $page = 1): ServerResponse
     {
         // Use ProjectSelector to get all projects including pending ones
         $databaseService = $this->adminService->getDatabaseService();
@@ -462,10 +517,62 @@ class AdminHandler implements CallbackHandlerInterface
             $text = $this->ensureUtf8Encoding($text);
             return $this->messageService->sendMessage($chatId, $text, $keyboard);
         }
-
-        $keyboard = $this->adminService->createDeleteProjectKeyboard($projects);
+        
+        // PAGINATION: 33 projects per page
+        $perPage = 33;
+        $totalProjects = count($projects);
+        $totalPages = (int)ceil($totalProjects / $perPage);
+        
+        // Check if page is valid
+        if ($page < 1) $page = 1;
+        if ($page > $totalPages) $page = $totalPages;
+        
+        // Get projects for current page
+        $offset = ($page - 1) * $perPage;
+        $projectsOnPage = array_slice($projects, $offset, $perPage);
         
         $text = "🗑️ <b>Удаление проекта</b> Выберите проект для удаления:";
+        $text .= "\nСтраница {$page} из {$totalPages} (Всего: {$totalProjects} проектов)";
+        
+        $keyboard = [];
+        
+        // Create buttons for projects (3 per row)
+        $row = [];
+        foreach ($projectsOnPage as $index => $project) {
+            // Используем сокращенный callback_data чтобы не превысить лимит Telegram (64 байта)
+            $callbackData = "category_Адм_УдПр_{$project}";
+            
+            $row[] = ['text' => $project, 'callback_data' => $callbackData];
+            
+            // Каждые 3 кнопки создаем новый ряд
+            if (count($row) == 3 || $index == count($projectsOnPage) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        // Add pagination navigation buttons
+        if ($totalPages > 1) {
+            $navRow = [];
+            
+            if ($page > 1) {
+                $navRow[] = ['text' => '⬅️ Назад', 'callback_data' => "proj_delete_list_page_" . ($page - 1)];
+            }
+            
+            $navRow[] = ['text' => "📖 {$page}/{$totalPages}", 'callback_data' => "proj_delete_list_page_{$page}"];
+            
+            if ($page < $totalPages) {
+                $navRow[] = ['text' => '➡️ Вперед', 'callback_data' => "proj_delete_list_page_" . ($page + 1)];
+            }
+            
+            $keyboard[] = $navRow;
+        }
+        
+        // Кнопка назад
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к управлению проектами', 'callback_data' => 'category_Админка_Проекты']
+        ];
+        
         $text = $this->ensureUtf8Encoding($text);
         return $this->messageService->sendMessage($chatId, $text, $keyboard);
     }

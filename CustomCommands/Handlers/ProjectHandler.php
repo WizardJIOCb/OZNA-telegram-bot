@@ -166,7 +166,13 @@ class ProjectHandler implements CallbackHandlerInterface
         // Handle project card callbacks
         if (str_starts_with($callbackData, 'proj_card_')) {
             if ($callbackData === 'proj_card_list') {
-                return $this->showProjectCardsList($chatId, $userId);
+                return $this->showProjectCardsList($chatId, $userId, 1);
+            }
+            
+            // Handle pagination for project cards list
+            if (str_starts_with($callbackData, 'proj_card_list_page_')) {
+                $page = (int)str_replace('proj_card_list_page_', '', $callbackData);
+                return $this->showProjectCardsList($chatId, $userId, $page);
             }
             if ($callbackData === 'proj_card_add') {
                 return $this->addNewProject($chatId, $userId, $conversation);
@@ -1043,7 +1049,13 @@ class ProjectHandler implements CallbackHandlerInterface
         $userId = $callbackQuery->getFrom()->getId();
         
         if ($callbackData === 'proj_list_add') {
-            return $this->showAddReportProjectMenu($chatId, $userId);
+            return $this->showAddReportProjectMenu($chatId, $userId, 1);
+        }
+        
+        // Handle pagination for add report project menu
+        if (str_starts_with($callbackData, 'proj_list_add_page_')) {
+            $page = (int)str_replace('proj_list_add_page_', '', $callbackData);
+            return $this->showAddReportProjectMenu($chatId, $userId, $page);
         }
         
         if ($callbackData === 'proj_list_remove') {
@@ -1187,7 +1199,7 @@ class ProjectHandler implements CallbackHandlerInterface
     /**
      * Show menu to add project to report list
      */
-    private function showAddReportProjectMenu(string $chatId, int $userId): ServerResponse
+    private function showAddReportProjectMenu(string $chatId, int $userId, int $page = 1): ServerResponse
     {
         // Create a FRESH DatabaseService to avoid stale cached data
         $freshDatabaseService = new DatabaseService();
@@ -1226,26 +1238,57 @@ class ProjectHandler implements CallbackHandlerInterface
             return $this->messageService->sendMessage($chatId, $text, $keyboard);
         }
         
+        // PAGINATION: 33 projects per page
+        $perPage = 33;
+        $totalProjects = count($availableProjects);
+        $totalPages = (int)ceil($totalProjects / $perPage);
+        
+        // Check if page is valid
+        if ($page < 1) $page = 1;
+        if ($page > $totalPages) $page = $totalPages;
+        
+        // Get projects for current page
+        $offset = ($page - 1) * $perPage;
+        $projectsOnPage = array_slice($availableProjects, $offset, $perPage);
+        
+        $text = '📋 <b>Добавить проект для отчёта</b>
+
+Выберите проект для добавления в ваш личный список:';
+        $text .= "\nСтраница {$page} из {$totalPages} (Всего: {$totalProjects} проектов)";
+        
         $keyboard = [];
         
         // Create buttons for available projects (3 per row)
         $row = [];
-        foreach ($availableProjects as $index => $project) {
+        foreach ($projectsOnPage as $index => $project) {
             $row[] = ['text' => $project, 'callback_data' => "proj_list_add_{$project}"];
             
-            if (count($row) == 3 || $index == count($availableProjects) - 1) {
+            if (count($row) == 3 || $index == count($projectsOnPage) - 1) {
                 $keyboard[] = $row;
                 $row = [];
             }
         }
         
+        // Add pagination navigation buttons
+        if ($totalPages > 1) {
+            $navRow = [];
+            
+            if ($page > 1) {
+                $navRow[] = ['text' => '⬅️ Назад', 'callback_data' => "proj_list_add_page_" . ($page - 1)];
+            }
+            
+            $navRow[] = ['text' => "📖 {$page}/{$totalPages}", 'callback_data' => 'noop'];
+            
+            if ($page < $totalPages) {
+                $navRow[] = ['text' => '➡️ Вперед', 'callback_data' => "proj_list_add_page_" . ($page + 1)];
+            }
+            
+            $keyboard[] = $navRow;
+        }
+        
         $keyboard[] = [
             ['text' => '⬅️ Назад к проектам для отчёта', 'callback_data' => 'category_Проекты_ПроектыДляОтчёта']
         ];
-        
-        $text = '📋 <b>Добавить проект для отчёта</b>
-
-Выберите проект для добавления в ваш личный список:';
         
         return $this->messageService->sendMessage($chatId, $text, $keyboard);
     }
@@ -1413,12 +1456,18 @@ class ProjectHandler implements CallbackHandlerInterface
             if ($permissionCheck !== null) {
                 return $permissionCheck;
             }
-            return $this->showByProjectReportMenu($chatId, $userId);
+            return $this->showByProjectReportMenu($chatId, $userId, 1);
         }
         
         // Resume by-project report after export key verification
         if ($callbackData === 'proj_report_byproject_after_key') {
-            return $this->showByProjectReportMenu($chatId, $userId);
+            return $this->showByProjectReportMenu($chatId, $userId, 1);
+        }
+        
+        // Handle pagination for by-project report
+        if (str_starts_with($callbackData, 'proj_report_byproject_page_')) {
+            $page = (int)str_replace('proj_report_byproject_page_', '', $callbackData);
+            return $this->showByProjectReportMenu($chatId, $userId, $page);
         }
         
         // Handle notes export
@@ -1445,7 +1494,13 @@ class ProjectHandler implements CallbackHandlerInterface
         }
         
         if ($callbackData === 'proj_notes_type_byproject') {
-            return $this->showNotesExportProjectMenu($chatId, $userId);
+            return $this->showNotesExportProjectMenu($chatId, $userId, 1);
+        }
+        
+        // Handle pagination for notes export project menu
+        if (str_starts_with($callbackData, 'proj_notes_project_page_')) {
+            $page = (int)str_replace('proj_notes_project_page_', '', $callbackData);
+            return $this->showNotesExportProjectMenu($chatId, $userId, $page);
         }
         
         // Handle filter type selection
@@ -2987,7 +3042,7 @@ class ProjectHandler implements CallbackHandlerInterface
     /**
      * Show by-project report menu (the old implementation)
      */
-    private function showByProjectReportMenu(string $chatId, int $userId): ServerResponse
+    private function showByProjectReportMenu(string $chatId, int $userId, int $page = 1): ServerResponse
     {
         $text = '📁 <b>По-проектный отчёт</b>
 
@@ -3022,17 +3077,49 @@ class ProjectHandler implements CallbackHandlerInterface
             return $this->messageService->sendMessage($chatId, $text, $keyboard);
         }
         
+        // PAGINATION: 33 projects per page
+        $perPage = 33;
+        $totalProjects = count($displayProjects);
+        $totalPages = (int)ceil($totalProjects / $perPage);
+        
+        // Check if page is valid
+        if ($page < 1) $page = 1;
+        if ($page > $totalPages) $page = $totalPages;
+        
+        // Get projects for current page
+        $offset = ($page - 1) * $perPage;
+        $projectsOnPage = array_slice($displayProjects, $offset, $perPage);
+        
+        $text .= "\nСтраница {$page} из {$totalPages} (Всего: {$totalProjects} проектов)";
+        
         $keyboard = [];
         
         // Create buttons for projects (3 per row)
         $row = [];
-        foreach ($displayProjects as $index => $project) {
+        foreach ($projectsOnPage as $index => $project) {
             $row[] = ['text' => $project, 'callback_data' => "proj_report_select_{$project}"];
             
-            if (count($row) == 3 || $index == count($displayProjects) - 1) {
+            if (count($row) == 3 || $index == count($projectsOnPage) - 1) {
                 $keyboard[] = $row;
                 $row = [];
             }
+        }
+        
+        // Add pagination navigation buttons
+        if ($totalPages > 1) {
+            $navRow = [];
+            
+            if ($page > 1) {
+                $navRow[] = ['text' => '⬅️ Назад', 'callback_data' => "proj_report_byproject_page_" . ($page - 1)];
+            }
+            
+            $navRow[] = ['text' => "📖 {$page}/{$totalPages}", 'callback_data' => "proj_report_byproject_page_{$page}"];
+            
+            if ($page < $totalPages) {
+                $navRow[] = ['text' => '➡️ Вперед', 'callback_data' => "proj_report_byproject_page_" . ($page + 1)];
+            }
+            
+            $keyboard[] = $navRow;
         }
         
         $keyboard[] = [
@@ -4427,7 +4514,7 @@ class ProjectHandler implements CallbackHandlerInterface
     /**
      * Show project selection menu for notes export
      */
-    private function showNotesExportProjectMenu(string $chatId, int $userId): ServerResponse
+    private function showNotesExportProjectMenu(string $chatId, int $userId, int $page = 1): ServerResponse
     {
         // Get all projects
         $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector(
@@ -4446,14 +4533,50 @@ class ProjectHandler implements CallbackHandlerInterface
             return $this->messageService->sendMessage($chatId, $text, $keyboard);
         }
         
+        // PAGINATION: 33 projects per page
+        $perPage = 33;
+        $totalProjects = count($allProjects);
+        $totalPages = (int)ceil($totalProjects / $perPage);
+        
+        // Check if page is valid
+        if ($page < 1) $page = 1;
+        if ($page > $totalPages) $page = $totalPages;
+        
+        // Get projects for current page
+        $offset = ($page - 1) * $perPage;
+        $projectsOnPage = array_slice($allProjects, $offset, $perPage);
+        
         $text = "📁 <b>Заметки по проекту</b>\n\nВыберите проект:";
+        $text .= "\nСтраница {$page} из {$totalPages} (Всего: {$totalProjects} проектов)";
         
         $keyboard = [];
-        foreach ($allProjects as $projectCode) {
-            $keyboard[] = [[
-                'text' => $projectCode,
-                'callback_data' => "proj_notes_project_{$projectCode}"
-            ]];
+        
+        // Create buttons for projects (3 per row)
+        $row = [];
+        foreach ($projectsOnPage as $index => $projectCode) {
+            $row[] = ['text' => $projectCode, 'callback_data' => "proj_notes_project_{$projectCode}"];
+            
+            if (count($row) == 3 || $index == count($projectsOnPage) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        // Add pagination navigation buttons
+        if ($totalPages > 1) {
+            $navRow = [];
+            
+            if ($page > 1) {
+                $navRow[] = ['text' => '⬅️ Назад', 'callback_data' => "proj_notes_project_page_" . ($page - 1)];
+            }
+            
+            $navRow[] = ['text' => "📖 {$page}/{$totalPages}", 'callback_data' => "proj_notes_project_page_{$page}"];
+            
+            if ($page < $totalPages) {
+                $navRow[] = ['text' => '➡️ Вперед', 'callback_data' => "proj_notes_project_page_" . ($page + 1)];
+            }
+            
+            $keyboard[] = $navRow;
         }
         
         // Add back button
@@ -5014,7 +5137,7 @@ class ProjectHandler implements CallbackHandlerInterface
     /**
      * Show list of projects for cards
      */
-    private function showProjectCardsList(string $chatId, int $userId): ServerResponse
+    private function showProjectCardsList(string $chatId, int $userId, int $page = 1): ServerResponse
     {
         try {
             // Get connection (mysqli)
