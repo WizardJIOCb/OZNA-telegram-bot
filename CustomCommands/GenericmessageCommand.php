@@ -145,6 +145,46 @@ class GenericmessageCommand extends SystemCommand
             return $this->handleProjectCardInput($chatId, $userId, $text, $conversation);
         }
         
+        // Check if user is adding nomenclature group
+        if ($this->isAddingNomenclatureGroup($conversation, $userId)) {
+            return $this->handleNomenclatureGroupInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is adding project manager
+        if ($this->isAddingProjectManager($conversation, $userId)) {
+            return $this->handleProjectManagerInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is adding customer
+        if ($this->isAddingCustomer($conversation, $userId)) {
+            return $this->handleCustomerInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is adding business unit
+        if ($this->isAddingBusinessUnit($conversation, $userId)) {
+            return $this->handleBusinessUnitInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting 1C name
+        if ($this->isSetting1CName($conversation, $userId)) {
+            return $this->handle1CNameInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting PNR milestone hours
+        if ($this->isSettingPNRMilestoneHours($conversation, $userId)) {
+            return $this->handlePNRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting PNR mobilization
+        if ($this->isSettingPNRMobilization($conversation, $userId)) {
+            return $this->handlePNRMobilizationInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting PNR project activity
+        if ($this->isSettingPNRProjectActivity($conversation, $userId)) {
+            return $this->handlePNRProjectActivityInput($chatId, $userId, $text, $conversation);
+        }
+        
         // Check if user is in admin project adding state
         if ($this->isAddingProject($conversation, $userId)) {
             return $this->handleAddProject($chatId, $userId, $text, $conversation);
@@ -1376,5 +1416,205 @@ User ID должен быть числом.',
         );
         
         return $projectHandler->handleMessage($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is adding nomenclature group
+     */
+    private function isAddingNomenclatureGroup(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_nomenclature_group_name';
+    }
+    
+    /**
+     * Check if user is adding project manager
+     */
+    private function isAddingProjectManager(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_project_manager_name';
+    }
+    
+    /**
+     * Check if user is adding customer
+     */
+    private function isAddingCustomer(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_customer_name';
+    }
+    
+    /**
+     * Check if user is adding business unit
+     */
+    private function isAddingBusinessUnit(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_business_unit_name';
+    }
+    
+    /**
+     * Check if user is setting 1C name
+     */
+    private function isSetting1CName(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_1c_name';
+    }
+    
+    /**
+     * Check if user is setting PNR milestone hours
+     */
+    private function isSettingPNRMilestoneHours(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_pnr_milestone_hours';
+    }
+    
+    /**
+     * Handle nomenclature group name input
+     */
+    private function handleNomenclatureGroupInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleMessage($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Handle project manager name input
+     */
+    private function handleProjectManagerInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleProjectManagerNameInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Handle customer name input
+     */
+    private function handleCustomerInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleCustomerNameInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Handle business unit name input
+     */
+    private function handleBusinessUnitInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleBusinessUnitNameInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Handle 1C name input
+     */
+    private function handle1CNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handle1CNameInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Handle PNR milestone hours input
+     */
+    private function handlePNRMilestoneHoursInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handlePNRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting PNR mobilization
+     */
+    private function isSettingPNRMobilization(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_pnr_mobilization';
+    }
+    
+    /**
+     * Handle PNR mobilization input
+     */
+    private function handlePNRMobilizationInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handlePNRMobilizationInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting PNR project activity
+     */
+    private function isSettingPNRProjectActivity(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_pnr_project_activity';
+    }
+    
+    /**
+     * Handle PNR project activity input
+     */
+    private function handlePNRProjectActivityInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handlePNRProjectActivityInput($chatId, $userId, $text, $conversation);
     }
 }

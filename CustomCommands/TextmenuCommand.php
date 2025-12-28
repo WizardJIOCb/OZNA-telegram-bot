@@ -287,15 +287,15 @@ class TextmenuCommand extends SystemCommand
         $levelName = $this->adminService->getAccessLevelName($accessLevel);
         
         // UPDATED: Супервайзеры, администраторы и супер-админы имеют доступ к админке
-        // Супервайзеры видят только модерацию проектов
+        // Супервайзеры теперь имеют доступ к управлению проектами
         if ($accessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
             // Debug: Log that user has access to admin panel
             error_log("User {$userId} has access to admin panel (level {$accessLevel}), showing menu");
             
             $keyboard = [];
             
-            // Администраторы и Суперадмины видят полное меню
-            if ($accessLevel >= DatabaseService::ACCESS_LEVEL_ADMIN) {
+            // Супервайзеры, Администраторы и Суперадмины видят полное меню
+            if ($accessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
                 $keyboard[] = [
                     ['text' => '📋 Управление проектами', 'callback_data' => 'category_Админка_Проекты']
                 ];
@@ -333,7 +333,7 @@ class TextmenuCommand extends SystemCommand
             // Разные заголовки для разных уровней
             if ($accessLevel === DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
                 $title = "⚙️ <b>Панель супервайзера</b>";
-                $description = "Вы можете модерировать проекты, добавленные пользователями.";
+                $description = "Выберите действие:";
             } else {
                 $title = "⚙️ <b>Панель администратора</b>";
                 $description = "Выберите действие:";

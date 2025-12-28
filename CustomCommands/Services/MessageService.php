@@ -442,11 +442,11 @@ class MessageService
                 } 
                 // For tabel/work entries - use all projects + user's pending projects
                 else {
-                    $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
-                    $projects = $projectSelector->getAllProjects();
+                    $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector($databaseService);
+                    $projects = $projectSelector->getAllProjectsIncludingPending();
                     
-                    error_log("MessageService: createProjectSelectionKeyboard for user {$userId} (all projects)");
-                    error_log("MessageService: got " . count($projects) . " projects from file");
+                    error_log("MessageService: createProjectSelectionKeyboard for user {$userId} (all projects including pending)");
+                    error_log("MessageService: got " . count($projects) . " projects from database");
                 }
                 
             } catch (Exception $e) {
@@ -456,9 +456,13 @@ class MessageService
         
         // Fallback to all projects if no userId provided or no projects found
         if (empty($projects)) {
-            $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
-            $projects = $projectSelector->getAllProjects();
-            error_log("MessageService: using all projects list with " . count($projects) . " projects");
+            // Need DatabaseService for getAllProjectsIncludingPending
+            if (!isset($databaseService)) {
+                $databaseService = new DatabaseService();
+            }
+            $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector($databaseService);
+            $projects = $projectSelector->getAllProjectsIncludingPending();
+            error_log("MessageService: using all projects list (including pending) with " . count($projects) . " projects");
         }
         
         // ALWAYS add user's pending projects to the list (if any)
@@ -547,11 +551,11 @@ class MessageService
                 } 
                 // For tabel/work entries - use all projects + user's pending projects
                 else {
-                    $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
-                    $projects = $projectSelector->getAllProjects();
+                    $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector($databaseService);
+                    $projects = $projectSelector->getAllProjectsIncludingPending();
                     
-                    error_log("MessageService: createProjectSelectionKeyboardWithPagination for user {$userId} (all projects)");
-                    error_log("MessageService: got " . count($projects) . " projects from file");
+                    error_log("MessageService: createProjectSelectionKeyboardWithPagination for user {$userId} (all projects including pending)");
+                    error_log("MessageService: got " . count($projects) . " projects from database");
                 }
                 
             } catch (Exception $e) {
@@ -561,9 +565,13 @@ class MessageService
         
         // Fallback to all projects if no userId provided or no projects found
         if (empty($projects)) {
-            $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
-            $projects = $projectSelector->getAllProjects();
-            error_log("MessageService: using all projects list with " . count($projects) . " projects");
+            // Need DatabaseService for getAllProjectsIncludingPending
+            if (!isset($databaseService)) {
+                $databaseService = new DatabaseService();
+            }
+            $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector($databaseService);
+            $projects = $projectSelector->getAllProjectsIncludingPending();
+            error_log("MessageService: using all projects list (including pending) with " . count($projects) . " projects");
         }
         
         // ALWAYS add user's pending projects to the list (if any)
@@ -738,8 +746,8 @@ class MessageService
             ];
         }
         
-        // Add Project Management button only for super admins (access level 4)
-        if ($userAccessLevel >= 4) {
+        // Add Project Management button for supervisors and above (access level 2+)
+        if ($userAccessLevel >= 2) {
             error_log("MessageService: adding project management button for userAccessLevel: {$userAccessLevel}");
             $keyboard[] = [
                 ['text' => '🛠️ Управление проектом']
@@ -771,6 +779,25 @@ class MessageService
             ],
             [
                 ['text' => '🔐 Запросить доступ']
+            ]
+        ];
+    }
+
+    /**
+     * Create notes reminder keyboard
+     * @param string $context - 'ПНР', 'ШМР', or 'Проект'
+     */
+    public function createNotesReminderKeyboard(string $context): array
+    {
+        return [
+            [
+                ['text' => '✍️ Оставить заметку', 'callback_data' => 'notes_create_' . $context]
+            ],
+            [
+                ['text' => '📋 Посмотреть заметки', 'callback_data' => 'notes_view_list']
+            ],
+            [
+                ['text' => '➖ Пропустить', 'callback_data' => 'noop']
             ]
         ];
     }

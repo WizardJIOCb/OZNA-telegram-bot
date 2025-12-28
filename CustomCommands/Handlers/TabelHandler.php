@@ -1122,7 +1122,7 @@ class TabelHandler implements CallbackHandlerInterface
                 $text = "<b>Табель за {$date}, выбор проекта</b>";
             }
             
-            $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, false, $page, 33);
+            $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, true, $page, 33);
             
             // Extract messageId for delete+send effect
             $messageId = $callbackQuery->getMessage()->getMessageId();
@@ -2062,7 +2062,7 @@ class TabelHandler implements CallbackHandlerInterface
                     $conversation->update();
                     
                     $text = "<b>⚙️ Табель Пусконаладка за {$date}, выбор проекта</b>";
-                    $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
+                    $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), true, 1, 33);
                     // Extract messageId for delete+send effect
                     $messageId = $callbackQuery->getMessage()->getMessageId();
                     return $this->messageService->sendOrEditMessage(
@@ -2085,7 +2085,7 @@ class TabelHandler implements CallbackHandlerInterface
                 $conversation->update();
                 
                 $text = "<b>🔧 Табель Шеф-монтаж за {$date}, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), true, 1, 33);
                 // Extract messageId for delete+send effect
                 $messageId = $callbackQuery->getMessage()->getMessageId();
                 return $this->messageService->sendOrEditMessage(
@@ -2109,7 +2109,7 @@ class TabelHandler implements CallbackHandlerInterface
                 error_log("TabelHandler: mobile brigade flag set to true");
                 
                 $text = "<b>👷‍♂️ Табель Мобильная бригада за {$date}, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), true, 1, 33);
                 // Extract messageId for delete+send effect
                 $messageId = $callbackQuery->getMessage()->getMessageId();
                 return $this->messageService->sendOrEditMessage(
@@ -2134,7 +2134,7 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 $text = "<b>Табель за {$date}, выбор проекта</b>";
                 
-                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), true, 1, 33);
                 // Extract messageId for delete+send effect
                 $messageId = $callbackQuery->getMessage()->getMessageId();
                 return $this->messageService->sendOrEditMessage(
@@ -7825,7 +7825,7 @@ class TabelHandler implements CallbackHandlerInterface
             
             // Show project selection
             $text = "<b>Табель - Простой, выбор проекта</b>";
-            $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
+            $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), true, 1, 33);
             // Extract messageId for delete+send effect
             $messageId = null;
             $message = $callbackQuery->getMessage();
@@ -8688,7 +8688,7 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 // Show project selection
                 $text = "<b>Табель - Простой, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, false, 1, 33);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, true, 1, 33);
                 return $this->messageService->sendMessage($chatId, $text, $keyboard);
             }
             
@@ -8965,7 +8965,7 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 // Continue with project selection for other work types
                 $text = "<b>Табель за {$userInput}, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, false, 1, 33);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, true, 1, 33);
                 return $this->messageService->sendMessage($chatId, $text, $keyboard);
             }
         }

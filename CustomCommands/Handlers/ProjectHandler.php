@@ -57,11 +57,18 @@ class ProjectHandler implements CallbackHandlerInterface
         $startsWithProjectReport = str_starts_with($callbackData, 'proj_report_');
         $startsWithProjectNotes = str_starts_with($callbackData, 'proj_notes_');
         $startsWithProjectCard = str_starts_with($callbackData, 'proj_card_');
+        $startsWithProjectConstructor = str_starts_with($callbackData, 'proj_constructor_');
+        $startsWithProjectNomenclature = str_starts_with($callbackData, 'proj_nomenclature_');
+        $startsWithProjectPM = str_starts_with($callbackData, 'proj_pm_');
+        $startsWithProjectCustomer = str_starts_with($callbackData, 'proj_customer_');
+        $startsWithProjectBU = str_starts_with($callbackData, 'proj_bu_');
+        $startsWithProject1C = str_starts_with($callbackData, 'proj_1c_');
+        $startsWithProjectPNR = str_starts_with($callbackData, 'proj_pnr_');
         $isExportKeyHistory = $callbackData === 'export_key_history' || str_starts_with($callbackData, 'export_history_page_');
         $isRetryExport = $callbackData === 'retry_export';
         $isCancelExport = $callbackData === 'category_Проекты' && isset($conversation->notes['awaiting_export_key_verify']) && $conversation->notes['awaiting_export_key_verify'];
         
-        $canHandle = $startsWithCategoryProjects || $startsWithProjectList || $startsWithProjectControl || $startsWithProjectReport || $startsWithProjectNotes || $startsWithProjectCard || $isExportKeyHistory || $isRetryExport || $isCancelExport;
+        $canHandle = $startsWithCategoryProjects || $startsWithProjectList || $startsWithProjectControl || $startsWithProjectReport || $startsWithProjectNotes || $startsWithProjectCard || $startsWithProjectConstructor || $startsWithProjectNomenclature || $startsWithProjectPM || $startsWithProjectCustomer || $startsWithProjectBU || $startsWithProject1C || $startsWithProjectPNR || $isExportKeyHistory || $isRetryExport || $isCancelExport;
         
         error_log("ProjectHandler: canHandle result for '{$callbackData}': " . ($canHandle ? 'true' : 'false'));
         error_log("ProjectHandler: startsWithCategoryProjects: " . ($startsWithCategoryProjects ? 'true' : 'false'));
@@ -196,6 +203,45 @@ class ProjectHandler implements CallbackHandlerInterface
                 $projectCode = str_replace('proj_card_delete_no_', '', $callbackData);
                 return $this->viewProjectCard($chatId, $userId, $projectCode);
             }
+            if (str_starts_with($callbackData, 'proj_card_edit_')) {
+                $projectCode = str_replace('proj_card_edit_', '', $callbackData);
+                return $this->showProjectConstructor($chatId, $userId, $projectCode);
+            }
+        }
+        
+        // Handle project constructor callbacks
+        if (str_starts_with($callbackData, 'proj_constructor_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle project nomenclature callbacks
+        if (str_starts_with($callbackData, 'proj_nomenclature_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle project manager callbacks
+        if (str_starts_with($callbackData, 'proj_pm_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle customer callbacks
+        if (str_starts_with($callbackData, 'proj_customer_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle business unit callbacks
+        if (str_starts_with($callbackData, 'proj_bu_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle 1C name callbacks
+        if (str_starts_with($callbackData, 'proj_1c_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
+        }
+        
+        // Handle PNR milestones callbacks
+        if (str_starts_with($callbackData, 'proj_pnr_')) {
+            return $this->handleConstructorCallback($callbackQuery, $callbackData, $conversation);
         }
         
         // Handle My Activity submenu callbacks
@@ -426,6 +472,2392 @@ class ProjectHandler implements CallbackHandlerInterface
             ];
             
             return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+    }
+
+    /**
+     * Show manage nomenclature groups menu
+     */
+    private function showManageNomenclatureGroups(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all nomenclature groups
+            $result = $conn->query("SELECT id, name FROM project_nomenclature_groups ORDER BY name");
+            $groups = [];
+            while ($row = $result->fetch_assoc()) {
+                $groups[] = $row;
+            }
+            
+            if (empty($groups)) {
+                $text = '🗑️ <b>Управление группами</b>
+
+Номенклатурных групп пока нет.';
+                $keyboard = [
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_name_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+            
+            $text = '🗑️ <b>Управление группами</b>
+
+Нажмите на группу для удаления:';
+            
+            $keyboard = [];
+            foreach ($groups as $group) {
+                $keyboard[] = [
+                    ['text' => '🗑️ ' . $group['name'], 'callback_data' => 'proj_nomenclature_delete_' . $group['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_name_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showManageNomenclatureGroups error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Confirm deletion of nomenclature group
+     */
+    private function confirmDeleteNomenclatureGroup(string $chatId, int $userId, string $projectCode, int $groupId): ServerResponse
+    {
+        error_log("confirmDeleteNomenclatureGroup called with: chatId={$chatId}, userId={$userId}, projectCode={$projectCode}, groupId={$groupId}");
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get group name
+            $stmt = $conn->prepare("SELECT name FROM project_nomenclature_groups WHERE id = ?");
+            $stmt->bind_param('i', $groupId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $group = $result->fetch_assoc();
+            
+            error_log("Group query result: " . ($group ? "Found group '{$group['name']}'" : "Group NOT FOUND"));
+            
+            if (!$group) {
+                error_log("Returning 'Group not found' message");
+                return $this->messageService->sendMessage($chatId, '❌ Группа не найдена');
+            }
+            
+            // Check if group is used by any projects
+            $stmt = $conn->prepare("SELECT COUNT(*) as count FROM project WHERE name = ?");
+            $stmt->bind_param('s', $group['name']);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $usage = $result->fetch_assoc();
+            $usageCount = $usage['count'] ?? 0;
+            
+            $text = '⚠️ <b>Подтвердите удаление</b>
+
+Группа: <b>' . $group['name'] . '</b>
+
+';
+            
+            if ($usageCount > 0) {
+                $text .= '⚠️ Эта группа используется в <b>' . $usageCount . '</b> проект(ах).
+При удалении названия проектов останутся неизменными.
+
+';
+            }
+            
+            $text .= 'Вы уверены?';
+            
+            $keyboard = [
+                [
+                    ['text' => '✅ Да, удалить', 'callback_data' => 'proj_nomenclature_delete_yes_' . $groupId . '_' . $projectCode]
+                ],
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_nomenclature_delete_no_' . $groupId . '_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::confirmDeleteNomenclatureGroup error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Delete nomenclature group
+     */
+    private function deleteNomenclatureGroup(string $chatId, int $userId, string $projectCode, int $groupId): ServerResponse
+    {
+        error_log("deleteNomenclatureGroup called with: chatId={$chatId}, userId={$userId}, projectCode={$projectCode}, groupId={$groupId}");
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get group name before deletion
+            $stmt = $conn->prepare("SELECT name FROM project_nomenclature_groups WHERE id = ?");
+            $stmt->bind_param('i', $groupId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $group = $result->fetch_assoc();
+            
+            error_log("Group query result before delete: " . ($group ? "Found group '{$group['name']}'" : "Group NOT FOUND"));
+            
+            if (!$group) {
+                error_log("Returning 'Group not found' message from delete");
+                return $this->messageService->sendMessage($chatId, '❌ Группа не найдена');
+            }
+            
+            $groupName = $group['name'];
+            
+            // Delete the group
+            $stmt = $conn->prepare("DELETE FROM project_nomenclature_groups WHERE id = ?");
+            $stmt->bind_param('i', $groupId);
+            $stmt->execute();
+            
+            $text = '✅ <b>Группа удалена</b>
+
+Группа "' . $groupName . '" успешно удалена.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К управлению группами', 'callback_data' => 'proj_nomenclature_manage_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К выбору группы', 'callback_data' => 'proj_constructor_name_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::deleteNomenclatureGroup error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Show project managers selection menu
+     */
+    private function showProjectManagersMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Create table if not exists
+            $conn->query("
+                CREATE TABLE IF NOT EXISTS project_managers (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL UNIQUE,
+                    created_by BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+            
+            // Get all project managers
+            $result = $conn->query("SELECT id, name FROM project_managers ORDER BY name");
+            $managers = [];
+            while ($row = $result->fetch_assoc()) {
+                $managers[] = $row;
+            }
+            
+            $text = '👤 <b>Руководитель проекта</b>
+
+';
+            $text .= 'Выберите руководителя проекта:';
+            
+            $keyboard = [];
+            foreach ($managers as $manager) {
+                $keyboard[] = [
+                    ['text' => $manager['name'], 'callback_data' => 'proj_pm_select_' . $manager['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '➕ Добавить РП', 'callback_data' => 'proj_pm_add_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '🗑️ Управление РП', 'callback_data' => 'proj_pm_manage_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_pm_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showProjectManagersMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Select project manager for project
+     */
+    private function selectProjectManager(string $chatId, int $userId, string $projectCode, int $pmId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get manager name
+            $stmt = $conn->prepare("SELECT name FROM project_managers WHERE id = ?");
+            $stmt->bind_param('i', $pmId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $manager = $result->fetch_assoc();
+            
+            if (!$manager) {
+                return $this->messageService->sendMessage($chatId, '❌ Руководитель не найден');
+            }
+            
+            // Update project card with PM
+            // First check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardExists = $result->fetch_assoc();
+            
+            if ($cardExists) {
+                // Update existing card
+                $stmt = $conn->prepare("UPDATE project_cards SET project_manager_id = ? WHERE project_code = ?");
+                $stmt->bind_param('is', $pmId, $projectCode);
+            } else {
+                // Create new card - need to get project name first
+                $stmt = $conn->prepare("SELECT name FROM project WHERE code = ?");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $project = $result->fetch_assoc();
+                $projectName = $project['name'] ?? $projectCode; // fallback to code if name not found
+                
+                $stmt = $conn->prepare("INSERT INTO project_cards (project_code, project_name, project_manager_id, created_by) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param('ssii', $projectCode, $projectName, $pmId, $userId);
+            }
+            $stmt->execute();
+            
+            $text = '✅ <b>Руководитель проекта назначен</b>
+
+';
+            $text .= 'Проект: ' . $projectCode . '
+';
+            $text .= 'РП: ' . $manager['name'];
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::selectProjectManager error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to add new project manager
+     */
+    private function promptAddProjectManager(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_project_manager_name';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '➕ <b>Добавить руководителя проекта</b>
+
+';
+        $text .= 'Введите ФИО руководителя:';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_pm_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle project manager name input
+     */
+    public function handleProjectManagerNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: проект не найден');
+            }
+            
+            $managerName = trim($text);
+            
+            if (empty($managerName)) {
+                $errorText = '❌ ФИО не может быть пустым.
+
+Введите ФИО руководителя:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_pm_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Check if manager already exists
+            $stmt = $conn->prepare("SELECT id FROM project_managers WHERE name = ?");
+            $stmt->bind_param('s', $managerName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->fetch_assoc()) {
+                $errorText = '❌ РП с таким ФИО уже существует.
+
+Введите другое ФИО:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_pm_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Insert new manager
+            $stmt = $conn->prepare("INSERT INTO project_managers (name, created_by) VALUES (?, ?)");
+            $stmt->bind_param('si', $managerName, $userId);
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>Руководитель проекта добавлен</b>
+
+';
+            $successText .= 'ФИО: ' . $managerName;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К выбору РП', 'callback_data' => 'proj_constructor_pm_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleProjectManagerNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при добавлении РП: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show manage project managers menu
+     */
+    private function showManageProjectManagers(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all project managers
+            $result = $conn->query("SELECT id, name FROM project_managers ORDER BY name");
+            $managers = [];
+            while ($row = $result->fetch_assoc()) {
+                $managers[] = $row;
+            }
+            
+            if (empty($managers)) {
+                $text = '📋 <b>Управление руководителями</b>
+
+';
+                $text .= 'Список пуст. Добавьте первого руководителя.';
+                
+                $keyboard = [
+                    [
+                        ['text' => '➕ Добавить РП', 'callback_data' => 'proj_pm_add_' . $projectCode]
+                    ],
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_pm_' . $projectCode]
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+            
+            $text = '🗑️ <b>Управление руководителями</b>
+
+';
+            $text .= 'Выберите РП для удаления:';
+            
+            $keyboard = [];
+            foreach ($managers as $manager) {
+                $keyboard[] = [
+                    ['text' => '🗑️ ' . $manager['name'], 'callback_data' => 'proj_pm_delete_' . $manager['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_pm_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showManageProjectManagers error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Confirm deletion of project manager
+     */
+    private function confirmDeleteProjectManager(string $chatId, int $userId, string $projectCode, int $pmId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get manager name
+            $stmt = $conn->prepare("SELECT name FROM project_managers WHERE id = ?");
+            $stmt->bind_param('i', $pmId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $manager = $result->fetch_assoc();
+            
+            if (!$manager) {
+                return $this->messageService->sendMessage($chatId, '❌ Руководитель не найден');
+            }
+            
+            // Check if manager is used by any projects
+            $stmt = $conn->prepare("SELECT COUNT(*) as count FROM project_cards WHERE project_manager_id = ?");
+            $stmt->bind_param('i', $pmId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $usage = $result->fetch_assoc();
+            $usageCount = $usage['count'] ?? 0;
+            
+            $text = '⚠️ <b>Подтвердите удаление</b>
+
+РП: <b>' . $manager['name'] . '</b>
+
+';
+            
+            if ($usageCount > 0) {
+                $text .= '⚠️ Этот РП назначен на <b>' . $usageCount . '</b> проект(ов).
+При удалении назначения будут сброшены.
+
+';
+            }
+            
+            $text .= 'Вы уверены?';
+            
+            $keyboard = [
+                [
+                    ['text' => '✅ Да, удалить', 'callback_data' => 'proj_pm_delete_yes_' . $pmId . '_' . $projectCode]
+                ],
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_pm_delete_no_' . $pmId . '_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::confirmDeleteProjectManager error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Delete project manager
+     */
+    private function deleteProjectManager(string $chatId, int $userId, string $projectCode, int $pmId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get manager name before deletion
+            $stmt = $conn->prepare("SELECT name FROM project_managers WHERE id = ?");
+            $stmt->bind_param('i', $pmId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $manager = $result->fetch_assoc();
+            
+            if (!$manager) {
+                return $this->messageService->sendMessage($chatId, '❌ Руководитель не найден');
+            }
+            
+            $managerName = $manager['name'];
+            
+            // Clear PM from project cards
+            $stmt = $conn->prepare("UPDATE project_cards SET project_manager_id = NULL WHERE project_manager_id = ?");
+            $stmt->bind_param('i', $pmId);
+            $stmt->execute();
+            
+            // Delete the manager
+            $stmt = $conn->prepare("DELETE FROM project_managers WHERE id = ?");
+            $stmt->bind_param('i', $pmId);
+            $stmt->execute();
+            
+            $text = '✅ <b>РП удалён</b>
+
+РП "' . $managerName . '" успешно удалён.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К управлению РП', 'callback_data' => 'proj_pm_manage_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К выбору РП', 'callback_data' => 'proj_constructor_pm_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::deleteProjectManager error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Show customers selection menu
+     */
+    private function showCustomersMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all customers
+            $result = $conn->query("SELECT id, name FROM customers ORDER BY name");
+            $customers = [];
+            while ($row = $result->fetch_assoc()) {
+                $customers[] = $row;
+            }
+            
+            $text = '🏢 <b>Заказчик</b>
+
+';
+            $text .= 'Выберите заказчика:';
+            
+            $keyboard = [];
+            foreach ($customers as $customer) {
+                $keyboard[] = [
+                    ['text' => $customer['name'], 'callback_data' => 'proj_customer_select_' . $customer['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '➕ Добавить заказчика', 'callback_data' => 'proj_customer_add_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '🗑️ Управление заказчиками', 'callback_data' => 'proj_customer_manage_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_customer_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showCustomersMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Select customer for project
+     */
+    private function selectCustomer(string $chatId, int $userId, string $projectCode, int $customerId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get customer name
+            $stmt = $conn->prepare("SELECT name FROM customers WHERE id = ?");
+            $stmt->bind_param('i', $customerId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $customer = $result->fetch_assoc();
+            
+            if (!$customer) {
+                return $this->messageService->sendMessage($chatId, '❌ Заказчик не найден');
+            }
+            
+            // Update project card with customer
+            // First check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardExists = $result->fetch_assoc();
+            
+            if ($cardExists) {
+                // Update existing card
+                $stmt = $conn->prepare("UPDATE project_cards SET customer_id = ? WHERE project_code = ?");
+                $stmt->bind_param('is', $customerId, $projectCode);
+            } else {
+                // Create new card - need to get project name first
+                $stmt = $conn->prepare("SELECT name FROM project WHERE code = ?");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $project = $result->fetch_assoc();
+                $projectName = $project['name'] ?? $projectCode;
+                
+                $stmt = $conn->prepare("INSERT INTO project_cards (project_code, project_name, customer_id, created_by) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param('ssii', $projectCode, $projectName, $customerId, $userId);
+            }
+            $stmt->execute();
+            
+            $text = '✅ <b>Заказчик назначен</b>
+
+';
+            $text .= 'Проект: ' . $projectCode . '
+';
+            $text .= 'Заказчик: ' . $customer['name'];
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::selectCustomer error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to add new customer
+     */
+    private function promptAddCustomer(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_customer_name';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '➕ <b>Добавить заказчика</b>
+
+';
+        $text .= 'Введите название заказчика:';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_customer_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle customer name input
+     */
+    public function handleCustomerNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: проект не найден');
+            }
+            
+            $customerName = trim($text);
+            
+            if (empty($customerName)) {
+                $errorText = '❌ Название не может быть пустым.
+
+Введите название заказчика:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_customer_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Check if customer already exists
+            $stmt = $conn->prepare("SELECT id FROM customers WHERE name = ?");
+            $stmt->bind_param('s', $customerName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->fetch_assoc()) {
+                $errorText = '❌ Заказчик с таким названием уже существует.
+
+Введите другое название:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_customer_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Insert new customer
+            $stmt = $conn->prepare("INSERT INTO customers (name) VALUES (?)");
+            $stmt->bind_param('s', $customerName);
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>Заказчик добавлен</b>
+
+';
+            $successText .= 'Название: ' . $customerName;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К выбору заказчика', 'callback_data' => 'proj_constructor_customer_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleCustomerNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при добавлении заказчика: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show manage customers menu
+     */
+    private function showManageCustomers(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all customers
+            $result = $conn->query("SELECT id, name FROM customers ORDER BY name");
+            $customers = [];
+            while ($row = $result->fetch_assoc()) {
+                $customers[] = $row;
+            }
+            
+            if (empty($customers)) {
+                $text = '📋 <b>Управление заказчиками</b>
+
+';
+                $text .= 'Список пуст. Добавьте первого заказчика.';
+                
+                $keyboard = [
+                    [
+                        ['text' => '➕ Добавить заказчика', 'callback_data' => 'proj_customer_add_' . $projectCode]
+                    ],
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_customer_' . $projectCode]
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+            
+            $text = '🗑️ <b>Управление заказчиками</b>
+
+';
+            $text .= 'Выберите заказчика для удаления:';
+            
+            $keyboard = [];
+            foreach ($customers as $customer) {
+                $keyboard[] = [
+                    ['text' => '🗑️ ' . $customer['name'], 'callback_data' => 'proj_customer_delete_' . $customer['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_customer_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showManageCustomers error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Confirm deletion of customer
+     */
+    private function confirmDeleteCustomer(string $chatId, int $userId, string $projectCode, int $customerId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get customer name
+            $stmt = $conn->prepare("SELECT name FROM customers WHERE id = ?");
+            $stmt->bind_param('i', $customerId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $customer = $result->fetch_assoc();
+            
+            if (!$customer) {
+                return $this->messageService->sendMessage($chatId, '❌ Заказчик не найден');
+            }
+            
+            // Check if customer is used by any projects
+            $stmt = $conn->prepare("SELECT COUNT(*) as count FROM project_cards WHERE customer_id = ?");
+            $stmt->bind_param('i', $customerId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $usage = $result->fetch_assoc();
+            $usageCount = $usage['count'] ?? 0;
+            
+            $text = '⚠️ <b>Подтвердите удаление</b>
+
+Заказчик: <b>' . $customer['name'] . '</b>
+
+';
+            
+            if ($usageCount > 0) {
+                $text .= '⚠️ Этот заказчик используется в <b>' . $usageCount . '</b> проект(ах).
+При удалении назначения будут сброшены.
+
+';
+            }
+            
+            $text .= 'Вы уверены?';
+            
+            $keyboard = [
+                [
+                    ['text' => '✅ Да, удалить', 'callback_data' => 'proj_customer_delete_yes_' . $customerId . '_' . $projectCode]
+                ],
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_customer_delete_no_' . $customerId . '_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::confirmDeleteCustomer error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Delete customer
+     */
+    private function deleteCustomer(string $chatId, int $userId, string $projectCode, int $customerId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get customer name before deletion
+            $stmt = $conn->prepare("SELECT name FROM customers WHERE id = ?");
+            $stmt->bind_param('i', $customerId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $customer = $result->fetch_assoc();
+            
+            if (!$customer) {
+                return $this->messageService->sendMessage($chatId, '❌ Заказчик не найден');
+            }
+            
+            $customerName = $customer['name'];
+            
+            // Clear customer from project cards
+            $stmt = $conn->prepare("UPDATE project_cards SET customer_id = NULL WHERE customer_id = ?");
+            $stmt->bind_param('i', $customerId);
+            $stmt->execute();
+            
+            // Delete the customer
+            $stmt = $conn->prepare("DELETE FROM customers WHERE id = ?");
+            $stmt->bind_param('i', $customerId);
+            $stmt->execute();
+            
+            $text = '✅ <b>Заказчик удалён</b>
+
+Заказчик "' . $customerName . '" успешно удалён.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К управлению заказчиками', 'callback_data' => 'proj_customer_manage_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К выбору заказчика', 'callback_data' => 'proj_constructor_customer_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::deleteCustomer error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Show business units selection menu
+     */
+    private function showBusinessUnitsMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all business units
+            $result = $conn->query("SELECT id, name FROM business_units ORDER BY name");
+            $businessUnits = [];
+            while ($row = $result->fetch_assoc()) {
+                $businessUnits[] = $row;
+            }
+            
+            $text = '🏭 <b>Бизнес-направление</b>
+
+';
+            $text .= 'Выберите бизнес-направление:';
+            
+            $keyboard = [];
+            foreach ($businessUnits as $bu) {
+                $keyboard[] = [
+                    ['text' => $bu['name'], 'callback_data' => 'proj_bu_select_' . $bu['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '➕ Добавить БН', 'callback_data' => 'proj_bu_add_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '🗑️ Управление БН', 'callback_data' => 'proj_bu_manage_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_bu_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showBusinessUnitsMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Select business unit for project
+     */
+    private function selectBusinessUnit(string $chatId, int $userId, string $projectCode, int $buId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get business unit name
+            $stmt = $conn->prepare("SELECT name FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $bu = $result->fetch_assoc();
+            
+            if (!$bu) {
+                return $this->messageService->sendMessage($chatId, '❌ БН не найдено');
+            }
+            
+            // Update project card with business unit
+            // First check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardExists = $result->fetch_assoc();
+            
+            if ($cardExists) {
+                // Update existing card
+                $stmt = $conn->prepare("UPDATE project_cards SET business_unit_id = ? WHERE project_code = ?");
+                $stmt->bind_param('is', $buId, $projectCode);
+            } else {
+                // Create new card - need to get project name first
+                $stmt = $conn->prepare("SELECT name FROM project WHERE code = ?");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $project = $result->fetch_assoc();
+                $projectName = $project['name'] ?? $projectCode;
+                
+                $stmt = $conn->prepare("INSERT INTO project_cards (project_code, project_name, business_unit_id, created_by) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param('ssii', $projectCode, $projectName, $buId, $userId);
+            }
+            $stmt->execute();
+            
+            $text = '✅ <b>БН назначено</b>
+
+';
+            $text .= 'Проект: ' . $projectCode . '
+';
+            $text .= 'БН: ' . $bu['name'];
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::selectBusinessUnit error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to add new business unit
+     */
+    private function promptAddBusinessUnit(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_business_unit_name';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '➕ <b>Добавить бизнес-направление</b>
+
+';
+        $text .= 'Введите название БН:';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle business unit name input
+     */
+    public function handleBusinessUnitNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: проект не найден');
+            }
+            
+            $buName = trim($text);
+            
+            if (empty($buName)) {
+                $errorText = '❌ Название не может быть пустым.
+
+Введите название БН:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Check if business unit already exists
+            $stmt = $conn->prepare("SELECT id FROM business_units WHERE name = ?");
+            $stmt->bind_param('s', $buName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->fetch_assoc()) {
+                $errorText = '❌ БН с таким названием уже существует.
+
+Введите другое название:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Insert new business unit
+            $stmt = $conn->prepare("INSERT INTO business_units (name) VALUES (?)");
+            $stmt->bind_param('s', $buName);
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>БН добавлено</b>
+
+';
+            $successText .= 'Название: ' . $buName;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К выбору БН', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleBusinessUnitNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при добавлении БН: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show manage business units menu
+     */
+    private function showManageBusinessUnits(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all business units
+            $result = $conn->query("SELECT id, name FROM business_units ORDER BY name");
+            $businessUnits = [];
+            while ($row = $result->fetch_assoc()) {
+                $businessUnits[] = $row;
+            }
+            
+            if (empty($businessUnits)) {
+                $text = '📋 <b>Управление БН</b>
+
+';
+                $text .= 'Список пуст. Добавьте первое БН.';
+                
+                $keyboard = [
+                    [
+                        ['text' => '➕ Добавить БН', 'callback_data' => 'proj_bu_add_' . $projectCode]
+                    ],
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+            
+            $text = '🗑️ <b>Управление БН</b>
+
+';
+            $text .= 'Выберите БН для удаления:';
+            
+            $keyboard = [];
+            foreach ($businessUnits as $bu) {
+                $keyboard[] = [
+                    ['text' => '🗑️ ' . $bu['name'], 'callback_data' => 'proj_bu_delete_' . $bu['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showManageBusinessUnits error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Confirm deletion of business unit
+     */
+    private function confirmDeleteBusinessUnit(string $chatId, int $userId, string $projectCode, int $buId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get business unit name
+            $stmt = $conn->prepare("SELECT name FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $bu = $result->fetch_assoc();
+            
+            if (!$bu) {
+                return $this->messageService->sendMessage($chatId, '❌ БН не найдено');
+            }
+            
+            // Check if business unit is used by any projects
+            $stmt = $conn->prepare("SELECT COUNT(*) as count FROM project_cards WHERE business_unit_id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $usage = $result->fetch_assoc();
+            $usageCount = $usage['count'] ?? 0;
+            
+            $text = '⚠️ <b>Подтвердите удаление</b>
+
+БН: <b>' . $bu['name'] . '</b>
+
+';
+            
+            if ($usageCount > 0) {
+                $text .= '⚠️ Это БН используется в <b>' . $usageCount . '</b> проект(ах).
+При удалении назначения будут сброшены.
+
+';
+            }
+            
+            $text .= 'Вы уверены?';
+            
+            $keyboard = [
+                [
+                    ['text' => '✅ Да, удалить', 'callback_data' => 'proj_bu_delete_yes_' . $buId . '_' . $projectCode]
+                ],
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_delete_no_' . $buId . '_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::confirmDeleteBusinessUnit error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Delete business unit
+     */
+    private function deleteBusinessUnit(string $chatId, int $userId, string $projectCode, int $buId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get business unit name before deletion
+            $stmt = $conn->prepare("SELECT name FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $bu = $result->fetch_assoc();
+            
+            if (!$bu) {
+                return $this->messageService->sendMessage($chatId, '❌ БН не найдено');
+            }
+            
+            $buName = $bu['name'];
+            
+            // Clear business unit from project cards
+            $stmt = $conn->prepare("UPDATE project_cards SET business_unit_id = NULL WHERE business_unit_id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            
+            // Delete the business unit
+            $stmt = $conn->prepare("DELETE FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            
+            $text = '✅ <b>БН удалёно</b>
+
+БН "' . $buName . '" успешно удалёно.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К управлению БН', 'callback_data' => 'proj_bu_manage_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К выбору БН', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::deleteBusinessUnit error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Show 1C name management menu
+     */
+    private function show1CNameMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get current 1C name from project_cards
+            $stmt = $conn->prepare("SELECT name_1c FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardData = $result->fetch_assoc();
+            
+            $current1CName = ($cardData && !empty($cardData['name_1c'])) ? $cardData['name_1c'] : null;
+            
+            $text = '💼 <b>Наименование 1С</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            
+            if ($current1CName) {
+                $text .= '📄 <b>Текущее наименование:</b>
+' . $current1CName . '
+
+';
+                $text .= 'Вы можете изменить или очистить наименование.';
+            } else {
+                $text .= 'ℹ️ Наименование не установлено.
+
+';
+                $text .= 'Укажите наименование проекта для импорта в 1С.';
+            }
+            
+            $keyboard = [];
+            
+            if ($current1CName) {
+                $keyboard[] = [
+                    ['text' => '✏️ Изменить', 'callback_data' => 'proj_1c_set_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '🗑️ Очистить', 'callback_data' => 'proj_1c_clear_' . $projectCode]
+                ];
+            } else {
+                $keyboard[] = [
+                    ['text' => '➕ Установить', 'callback_data' => 'proj_1c_set_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_1c_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::show1CNameMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to enter 1C name
+     */
+    private function prompt1CName(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_1c_name';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '✏️ <b>Наименование 1С</b>
+
+';
+        $text .= 'Введите наименование проекта, как оно указано в 1С:';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_1c_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle 1C name input
+     */
+    public function handle1CNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: проект не найден');
+            }
+            
+            $name1C = trim($text);
+            
+            if (empty($name1C)) {
+                $errorText = '❌ Наименование не может быть пустым.
+
+Введите наименование 1С:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_1c_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Update or create project_cards record
+            // First check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardExists = $result->fetch_assoc();
+            
+            if ($cardExists) {
+                // Update existing card
+                $stmt = $conn->prepare("UPDATE project_cards SET name_1c = ? WHERE project_code = ?");
+                $stmt->bind_param('ss', $name1C, $projectCode);
+            } else {
+                // Create new card - need to get project name first
+                $stmt = $conn->prepare("SELECT name FROM project WHERE code = ?");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $project = $result->fetch_assoc();
+                $projectName = $project['name'] ?? $projectCode;
+                
+                $stmt = $conn->prepare("INSERT INTO project_cards (project_code, project_name, name_1c, created_by) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param('sssi', $projectCode, $projectName, $name1C, $userId);
+            }
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>Наименование 1С установлено</b>
+
+';
+            $successText .= 'Проект: ' . $projectCode . '
+';
+            $successText .= 'Наименование 1С: ' . $name1C;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handle1CNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при установке наименования: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Clear 1C name
+     */
+    private function clear1CName(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Clear 1C name from project_cards
+            $stmt = $conn->prepare("UPDATE project_cards SET name_1c = NULL WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            
+            $text = '✅ <b>Наименование 1С очищено</b>
+
+';
+            $text .= 'Проект: ' . $projectCode;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::clear1CName error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Get standard PNR milestone names
+     */
+    private function getPNRMilestoneNames(): array
+    {
+        return [
+            'Электрооборудование',
+            'Пожарная сигнализация',
+            'Охранная сигнализация',
+            'Автоматизация',
+            'Вентиляция и отопление',
+            'Технологическое оборудование',
+            'Метрология',
+            'Режимная наладка',
+            'Комплексное опробование'
+        ];
+    }
+    
+    /**
+     * Show PNR milestones menu with visual indicators
+     */
+    private function showPNRMilestonesMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get project info
+            $stmt = $conn->prepare("SELECT code, name FROM project WHERE code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $project = $result->fetch_assoc();
+            
+            if (!$project) {
+                return $this->messageService->sendMessage($chatId, '❌ Проект не найден');
+            }
+            
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            // Get existing milestones from database
+            $stmt = $conn->prepare("
+                SELECT milestone_name, planned_hours, is_not_applicable, unit
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР'
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            $existingMilestones = [];
+            while ($row = $result->fetch_assoc()) {
+                $existingMilestones[$row['milestone_name']] = $row;
+            }
+            
+            $text = '⚙️ <b>ПНР: Плановые трудозатраты</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            $text .= 'Настройте плановые трудозатраты для каждой вехи:
+
+';
+            
+            $keyboard = [];
+            foreach ($milestoneNames as $index => $milestoneName) {
+                $milestone = $existingMilestones[$milestoneName] ?? null;
+                
+                // Determine icon and text based on status
+                if ($milestone && $milestone['is_not_applicable']) {
+                    $icon = '❌';
+                    $buttonText = $icon . ' ' . $milestoneName . ' (не предусмотрено)';
+                } elseif ($milestone && $milestone['planned_hours'] !== null) {
+                    $icon = '📊';
+                    $unit = ($milestone['unit'] === 'hours') ? 'ч.' : 'дн.';
+                    $buttonText = $icon . ' ' . $milestoneName . ' (' . $milestone['planned_hours'] . ' ' . $unit . ')';
+                } else {
+                    $icon = '❓';
+                    $buttonText = $icon . ' ' . $milestoneName;
+                }
+                
+                $keyboard[] = [
+                    ['text' => $buttonText, 'callback_data' => 'proj_pnr_milestone_' . $index . '_' . $projectCode]
+                ];
+            }
+            
+            // Get additional work data from project_cards
+            $stmt = $conn->prepare("
+                SELECT pnr_mobilization, pnr_project_activity
+                FROM project_cards
+                WHERE project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardData = $result->fetch_assoc();
+            
+            // Mobilization button
+            $mobilization = ($cardData && $cardData['pnr_mobilization'] !== null) ? $cardData['pnr_mobilization'] : null;
+            if ($mobilization !== null && $mobilization > 0) {
+                $mobButtonText = '📊 Мобилизационные мероприятия (' . $mobilization . ' дн.)';
+            } else {
+                $mobButtonText = '❓ Мобилизационные мероприятия';
+            }
+            $keyboard[] = [
+                ['text' => $mobButtonText, 'callback_data' => 'proj_pnr_mobilization_' . $projectCode]
+            ];
+            
+            // Project activity button
+            $projectActivity = ($cardData && $cardData['pnr_project_activity'] !== null) ? $cardData['pnr_project_activity'] : null;
+            if ($projectActivity !== null && $projectActivity > 0) {
+                $projButtonText = '📊 Проектная деятельность (' . $projectActivity . ' дн.)';
+            } else {
+                $projButtonText = '❓ Проектная деятельность';
+            }
+            $keyboard[] = [
+                ['text' => $projButtonText, 'callback_data' => 'proj_pnr_project_activity_' . $projectCode]
+            ];
+            
+            $keyboard[] = [
+                ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showPNRMilestonesMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show edit menu for specific PNR milestone
+     */
+    private function showEditPNRMilestone(string $chatId, int $userId, string $projectCode, int $milestoneIndex, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            if (!isset($milestoneNames[$milestoneIndex])) {
+                return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+            }
+            
+            $milestoneName = $milestoneNames[$milestoneIndex];
+            
+            // Get existing milestone data
+            $stmt = $conn->prepare("
+                SELECT planned_hours, is_not_applicable, unit
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $milestone = $result->fetch_assoc();
+            
+            $text = '⚙️ <b>' . $milestoneName . '</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            
+            if ($milestone && $milestone['is_not_applicable']) {
+                $text .= '📌 <b>Статус:</b> Не предусмотрено проектом';
+            } elseif ($milestone && $milestone['planned_hours'] !== null) {
+                $unit = ($milestone['unit'] === 'hours') ? 'часов' : 'дней';
+                $text .= '📌 <b>Текущее значение:</b> ' . $milestone['planned_hours'] . ' ' . $unit;
+            } else {
+                $text .= '⚠️ Трудозатраты не установлены';
+            }
+            
+            $keyboard = [];
+            
+            if ($milestone && $milestone['is_not_applicable']) {
+                // Currently marked as "not applicable"
+                $keyboard[] = [
+                    ['text' => '✏️ Установить трудозатраты', 'callback_data' => 'proj_pnr_set_' . $milestoneIndex . '_' . $projectCode]
+                ];
+            } elseif ($milestone && $milestone['planned_hours'] !== null) {
+                // Has value set
+                $keyboard[] = [
+                    ['text' => '✏️ Изменить трудозатраты', 'callback_data' => 'proj_pnr_set_' . $milestoneIndex . '_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '❌ Не предусмотрено проектом', 'callback_data' => 'proj_pnr_notappl_' . $milestoneIndex . '_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '🗑️ Очистить', 'callback_data' => 'proj_pnr_clear_' . $milestoneIndex . '_' . $projectCode]
+                ];
+            } else {
+                // Not set yet
+                $keyboard[] = [
+                    ['text' => '➕ Установить трудозатраты', 'callback_data' => 'proj_pnr_set_' . $milestoneIndex . '_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '❌ Не предусмотрено проектом', 'callback_data' => 'proj_pnr_notappl_' . $milestoneIndex . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showEditPNRMilestone error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to enter PNR milestone hours
+     */
+    private function promptPNRMilestoneHours(string $chatId, int $userId, string $projectCode, int $milestoneIndex, Conversation $conversation): ServerResponse
+    {
+        $milestoneNames = $this->getPNRMilestoneNames();
+        
+        if (!isset($milestoneNames[$milestoneIndex])) {
+            return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+        }
+        
+        $milestoneName = $milestoneNames[$milestoneIndex];
+        
+        $conversation->notes['state'] = 'awaiting_pnr_milestone_hours';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->notes['milestone_index'] = $milestoneIndex;
+        $conversation->notes['milestone_name'] = $milestoneName;
+        $conversation->update();
+        
+        $text = '✏️ <b>Плановые трудозатраты</b>
+
+';
+        $text .= '<b>Веха:</b> ' . $milestoneName . '
+
+';
+        $text .= 'Введите плановые трудозатраты в <b>днях</b> (целое число):';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle PNR milestone hours input
+     */
+    public function handlePNRMilestoneHoursInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            $milestoneIndex = $conversation->notes['milestone_index'] ?? null;
+            $milestoneName = $conversation->notes['milestone_name'] ?? null;
+            
+            if (!$projectCode || $milestoneIndex === null || !$milestoneName) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: данные не найдены');
+            }
+            
+            $hours = trim($text);
+            
+            // Validate input - must be positive integer
+            if (!is_numeric($hours) || intval($hours) != $hours || intval($hours) < 0) {
+                $errorText = '❌ Неверный формат
+
+Введите целое положительное число (дни):';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            $plannedHours = intval($hours);
+            
+            // Check if milestone already exists
+            $stmt = $conn->prepare("
+                SELECT id FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $existing = $result->fetch_assoc();
+            
+            if ($existing) {
+                // Update existing
+                $stmt = $conn->prepare("
+                    UPDATE project_milestones
+                    SET planned_hours = ?, is_not_applicable = 0, unit = 'days'
+                    WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+                ");
+                $stmt->bind_param('iss', $plannedHours, $projectCode, $milestoneName);
+            } else {
+                // Insert new
+                $stmt = $conn->prepare("
+                    INSERT INTO project_milestones (project_code, work_type, milestone_name, planned_hours, is_not_applicable, unit, order_index)
+                    VALUES (?, 'ПНР', ?, ?, 0, 'days', ?)
+                ");
+                $stmt->bind_param('ssii', $projectCode, $milestoneName, $plannedHours, $milestoneIndex);
+            }
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>Трудозатраты установлены</b>
+
+';
+            $successText .= '<b>Веха:</b> ' . $milestoneName . '
+';
+            $successText .= '<b>Плановые трудозатраты:</b> ' . $plannedHours . ' дн.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handlePNRMilestoneHoursInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Set PNR milestone as not applicable
+     */
+    private function setPNRMilestoneNotApplicable(string $chatId, int $userId, string $projectCode, int $milestoneIndex): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            if (!isset($milestoneNames[$milestoneIndex])) {
+                return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+            }
+            
+            $milestoneName = $milestoneNames[$milestoneIndex];
+            
+            // Check if milestone already exists
+            $stmt = $conn->prepare("
+                SELECT id FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $existing = $result->fetch_assoc();
+            
+            if ($existing) {
+                // Update existing
+                $stmt = $conn->prepare("
+                    UPDATE project_milestones
+                    SET planned_hours = NULL, is_not_applicable = 1
+                    WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+                ");
+                $stmt->bind_param('ss', $projectCode, $milestoneName);
+            } else {
+                // Insert new
+                $stmt = $conn->prepare("
+                    INSERT INTO project_milestones (project_code, work_type, milestone_name, planned_hours, is_not_applicable, order_index)
+                    VALUES (?, 'ПНР', ?, NULL, 1, ?)
+                ");
+                $stmt->bind_param('ssi', $projectCode, $milestoneName, $milestoneIndex);
+            }
+            $stmt->execute();
+            
+            $text = '✅ <b>Статус установлен</b>
+
+';
+            $text .= '<b>Веха:</b> ' . $milestoneName . '
+';
+            $text .= '📌 <b>Статус:</b> Не предусмотрено проектом';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::setPNRMilestoneNotApplicable error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Clear PNR milestone data
+     */
+    private function clearPNRMilestone(string $chatId, int $userId, string $projectCode, int $milestoneIndex): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            if (!isset($milestoneNames[$milestoneIndex])) {
+                return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+            }
+            
+            $milestoneName = $milestoneNames[$milestoneIndex];
+            
+            // Delete milestone
+            $stmt = $conn->prepare("
+                DELETE FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            
+            $text = '✅ <b>Данные очищены</b>
+
+';
+            $text .= '<b>Веха:</b> ' . $milestoneName . '
+
+';
+            $text .= 'Трудозатраты и статус удалены.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::clearPNRMilestone error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Show edit menu for PNR Mobilization
+     */
+    private function showEditPNRMobilization(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get existing data
+            $stmt = $conn->prepare("
+                SELECT pnr_mobilization
+                FROM project_cards
+                WHERE project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardData = $result->fetch_assoc();
+            
+            $text = '🚗 <b>Мобилизационные мероприятия</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            $text .= 'Дорога + Инструктаж
+
+';
+            
+            if ($cardData && $cardData['pnr_mobilization'] !== null) {
+                $text .= '📊 <b>Текущее значение:</b> ' . $cardData['pnr_mobilization'] . ' дней';
+            } else {
+                $text .= '⚠️ Трудозатраты не установлены';
+            }
+            
+            $keyboard = [
+                [
+                    ['text' => '✏️ Установить трудозатраты', 'callback_data' => 'proj_pnr_mob_set_' . $projectCode]
+                ]
+            ];
+            
+            if ($cardData && $cardData['pnr_mobilization'] !== null) {
+                $keyboard[] = [
+                    ['text' => '🗑️ Очистить', 'callback_data' => 'proj_pnr_mob_clear_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showEditPNRMobilization error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to enter PNR Mobilization hours
+     */
+    private function promptPNRMobilization(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_pnr_mobilization';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '✏️ <b>Плановые трудозатраты</b>
+
+';
+        $text .= '<b>Мобилизационные мероприятия</b>
+
+';
+        $text .= 'Введите плановые трудозатраты в <b>днях</b> (целое число):';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle PNR Mobilization input
+     */
+    public function handlePNRMobilizationInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: данные не найдены');
+            }
+            
+            $days = trim($text);
+            
+            // Validate input - must be positive integer
+            if (!is_numeric($days) || intval($days) != $days || intval($days) < 0) {
+                $errorText = '❌ Неверный формат
+
+Введите целое положительное число (дни):';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            $plannedDays = intval($days);
+            
+            // Check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $exists = $result->fetch_assoc();
+            
+            if ($exists) {
+                // Update existing
+                $stmt = $conn->prepare("
+                    UPDATE project_cards
+                    SET pnr_mobilization = ?
+                    WHERE project_code = ?
+                ");
+                $stmt->bind_param('is', $plannedDays, $projectCode);
+            } else {
+                // Insert new
+                $stmt = $conn->prepare("
+                    INSERT INTO project_cards (project_code, pnr_mobilization)
+                    VALUES (?, ?)
+                ");
+                $stmt->bind_param('si', $projectCode, $plannedDays);
+            }
+            $stmt->execute();
+            
+            // Clear conversation state
+            $conversation->stop();
+            
+            $text = '✅ <b>Трудозатраты установлены</b>
+
+';
+            $text .= '<b>Мобилизационные мероприятия:</b> ' . $plannedDays . ' дн.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                ],
+                [
+                    ['text' => '🛠️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handlePNRMobilizationInput error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Clear PNR Mobilization data
+     */
+    private function clearPNRMobilization(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            $stmt = $conn->prepare("
+                UPDATE project_cards
+                SET pnr_mobilization = NULL
+                WHERE project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            
+            $text = '✅ <b>Данные очищены</b>
+
+';
+            $text .= '<b>Мобилизационные мероприятия:</b> данные удалены';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                ],
+                [
+                    ['text' => '🛠️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::clearPNRMobilization error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show edit menu for PNR Project Activity
+     */
+    private function showEditPNRProjectActivity(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get existing data
+            $stmt = $conn->prepare("
+                SELECT pnr_project_activity
+                FROM project_cards
+                WHERE project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardData = $result->fetch_assoc();
+            
+            $text = '📝 <b>Проектная деятельность</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            $text .= 'Разработка программ и графиков
+
+';
+            
+            if ($cardData && $cardData['pnr_project_activity'] !== null) {
+                $text .= '📊 <b>Текущее значение:</b> ' . $cardData['pnr_project_activity'] . ' дней';
+            } else {
+                $text .= '⚠️ Трудозатраты не установлены';
+            }
+            
+            $keyboard = [
+                [
+                    ['text' => '✏️ Установить трудозатраты', 'callback_data' => 'proj_pnr_projact_set_' . $projectCode]
+                ]
+            ];
+            
+            if ($cardData && $cardData['pnr_project_activity'] !== null) {
+                $keyboard[] = [
+                    ['text' => '🗑️ Очистить', 'callback_data' => 'proj_pnr_projact_clear_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showEditPNRProjectActivity error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to enter PNR Project Activity hours
+     */
+    private function promptPNRProjectActivity(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_pnr_project_activity';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '✏️ <b>Плановые трудозатраты</b>
+
+';
+        $text .= '<b>Проектная деятельность</b>
+
+';
+        $text .= 'Введите плановые трудозатраты в <b>днях</b> (целое число):';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle PNR Project Activity input
+     */
+    public function handlePNRProjectActivityInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: данные не найдены');
+            }
+            
+            $days = trim($text);
+            
+            // Validate input - must be positive integer
+            if (!is_numeric($days) || intval($days) != $days || intval($days) < 0) {
+                $errorText = '❌ Неверный формат
+
+Введите целое положительное число (дни):';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            $plannedDays = intval($days);
+            
+            // Check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $exists = $result->fetch_assoc();
+            
+            if ($exists) {
+                // Update existing
+                $stmt = $conn->prepare("
+                    UPDATE project_cards
+                    SET pnr_project_activity = ?
+                    WHERE project_code = ?
+                ");
+                $stmt->bind_param('is', $plannedDays, $projectCode);
+            } else {
+                // Insert new
+                $stmt = $conn->prepare("
+                    INSERT INTO project_cards (project_code, pnr_project_activity)
+                    VALUES (?, ?)
+                ");
+                $stmt->bind_param('si', $projectCode, $plannedDays);
+            }
+            $stmt->execute();
+            
+            // Clear conversation state
+            $conversation->stop();
+            
+            $text = '✅ <b>Трудозатраты установлены</b>
+
+';
+            $text .= '<b>Проектная деятельность:</b> ' . $plannedDays . ' дн.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                ],
+                [
+                    ['text' => '🛠️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handlePNRProjectActivityInput error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Clear PNR Project Activity data
+     */
+    private function clearPNRProjectActivity(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            $stmt = $conn->prepare("
+                UPDATE project_cards
+                SET pnr_project_activity = NULL
+                WHERE project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            
+            $text = '✅ <b>Данные очищены</b>
+
+';
+            $text .= '<b>Проектная деятельность:</b> данные удалены';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                ],
+                [
+                    ['text' => '🛠️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::clearPNRProjectActivity error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
         }
     }
 
@@ -4791,11 +7223,8 @@ class ProjectHandler implements CallbackHandlerInterface
      */
     private function generateNotesExportAll(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter): ServerResponse
     {
-        // Check export permission
-        $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
-        if ($permissionCheck !== null) {
-            return $permissionCheck;
-        }
+        // NOTE: Export permission already checked before calling this method
+        // No need to check again here
         
         // Get all notes without date filtering
         $notes = $this->getProjectNotes($projectCode, null, date('Y-m-d 23:59:59'), $statusFilter);
@@ -4847,11 +7276,8 @@ class ProjectHandler implements CallbackHandlerInterface
      */
     private function generateNotesExport(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter, string $period): ServerResponse
     {
-        // Check export permission
-        $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
-        if ($permissionCheck !== null) {
-            return $permissionCheck;
-        }
+        // NOTE: Export permission already checked before calling this method
+        // No need to check again here
         
         // Calculate date range based on period
         $endDate = date('Y-m-d 23:59:59');
@@ -4932,11 +7358,8 @@ class ProjectHandler implements CallbackHandlerInterface
      */
     private function generateNotesExportCustom(string $chatId, int $userId, $conversation, ?string $projectCode, string $statusFilter, string $startDate, string $endDate): ServerResponse
     {
-        // Check export permission
-        $permissionCheck = $this->checkExportPermission($chatId, $userId, $conversation, 'notes');
-        if ($permissionCheck !== null) {
-            return $permissionCheck;
-        }
+        // NOTE: Export permission already checked before calling this method
+        // No need to check again here
         
         // Convert dates to SQL format
         $startParts = explode('.', $startDate);
@@ -5228,10 +7651,11 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get additional data from project_cards if exists
             $stmt = $conn->prepare("
-                SELECT pc.*, c.name as customer_name, bu.name as business_unit_name
+                SELECT pc.*, c.name as customer_name, bu.name as business_unit_name, pm.name as project_manager_name
                 FROM project_cards pc
                 LEFT JOIN customers c ON pc.customer_id = c.id
                 LEFT JOIN business_units bu ON pc.business_unit_id = bu.id
+                LEFT JOIN project_managers pm ON pc.project_manager_id = pm.id
                 WHERE pc.project_code = ?
             ");
             $stmt->bind_param('s', $projectCode);
@@ -5271,12 +7695,14 @@ class ProjectHandler implements CallbackHandlerInterface
             ];
             
             foreach ($smrMilestoneNames as $name) {
-                // Count days by searching for milestone name in parentheses (excluding testers)
+                // Count ALL entries with milestone name from ШМР/Мобильная бригада users
+                // This matches export logic where all activities count towards milestone fact
                 $stmt = $conn->prepare("
                     SELECT COUNT(*) as days_count
                     FROM ozna_tabel ot
                     INNER JOIN ozna_data od ON ot.user_id = od.user_id
                     WHERE ot.message LIKE CONCAT('%', ?, '%', ?, '%')
+                    AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж' OR JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада')
                     AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
                 ");
                 $stmt->bind_param('ss', $projectCode, $name);
@@ -5321,40 +7747,46 @@ class ProjectHandler implements CallbackHandlerInterface
             // Get PNR additional work counts from tabel (excluding testers)
             $stmt = $conn->prepare("
                 SELECT 
-                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%') THEN 1 ELSE 0 END) as downtime_pnr,
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%')
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as downtime_pnr,
                     SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Устранени%', '%замечаний РК%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN 1 ELSE 0 END) as rk_comments_pnr,
-                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Работы по гарантии%') THEN 1 ELSE 0 END) as warranty_pnr,
-                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Реализация ТР%') THEN 1 ELSE 0 END) as additional_work,
-                    SUM(CASE WHEN (ot.message LIKE '%🚗 Дорога%' OR ot.message LIKE '%📋 Инструктаж%' OR (ot.message LIKE '%Подготовка%' AND ot.message NOT LIKE '%Подготовка к служебной поездке%'))
+                    SUM(CASE WHEN ot.message LIKE CONCAT('%', ?, '%Работы по гарантии%')
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                         THEN 1 ELSE 0 END) as warranty_pnr,
+                    SUM(CASE WHEN (ot.message LIKE '%Дорога%' 
+                         OR ot.message LIKE '%Инструктаж%' 
+                         OR ot.message LIKE '%Подготовка к служебной поездке%'
+                         OR ot.message LIKE '%Сдача авансового отчета%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN 1 ELSE 0 END) as mobilization_pnr,
                     SUM(CASE WHEN ot.message LIKE '%Дополнительные работы%'
-                         AND ot.message NOT LIKE '%Работы по графику%'
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN 1 ELSE 0 END) as pnr_stage_additional_work,
-                    SUM(CASE WHEN (ot.message LIKE '%💰 Сдача авансового отчета%' 
-                         OR ot.message LIKE '%📋 Разработка графика работ%'
-                         OR ot.message LIKE '%📋 Разработка программы работ%'
-                         OR ot.message LIKE '%Подготовка к служебной поездке%')
+                    SUM(CASE WHEN (ot.message LIKE '%Разработка графика работ%'
+                         OR ot.message LIKE '%Разработка программы работ%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN 1 ELSE 0 END) as project_activity_pnr,
-                    SUM(CASE WHEN ot.message LIKE '%Организация допоставки%'
+                    SUM(CASE WHEN (ot.message LIKE '%Организация допоставки%'
+                         OR ot.message LIKE '%Прочее (Проектная деятельность)%')
+                         AND ot.message NOT LIKE '%Дополнительные работы%'
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
-                         THEN 1 ELSE 0 END) as delivery_organization_pnr
+                         THEN 1 ELSE 0 END) as other_project_activity_pnr
                 FROM ozna_tabel ot
                 INNER JOIN ozna_data od ON ot.user_id = od.user_id
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('sssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+            $stmt->bind_param('ssss', $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $pnrAdditional = $result->fetch_assoc();
             
             // Get PNR milestone confirmations and fact days from tabel
             $pnrMilestonesFact = [];
+            $pnrMilestonesConfirmed = []; // Track which milestones are confirmed
             $pnrMilestoneNames = [
                 'Электрооборудование',
                 'Пожарная сигнализация',
@@ -5368,35 +7800,61 @@ class ProjectHandler implements CallbackHandlerInterface
             ];
             
             foreach ($pnrMilestoneNames as $name) {
-                // For "Режимная наладка" and "Комплексное опробование" - count without "Работы по графику" filter
-                if ($name === 'Режимная наладка' || $name === 'Комплексное опробование') {
-                    $stmt = $conn->prepare("
-                        SELECT COUNT(*) as days_count
-                        FROM ozna_tabel ot
-                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                        WHERE ot.message LIKE CONCAT('%', ?, '%')
-                        AND ot.message LIKE CONCAT('%', ?, '%')
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-                    ");
-                    $stmt->bind_param('ss', $projectCode, $name);
-                } else {
-                    // Count days by searching for "Работы по графику" + milestone name (excluding testers)
-                    $stmt = $conn->prepare("
-                        SELECT COUNT(*) as days_count
-                        FROM ozna_tabel ot
-                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                        WHERE ot.message LIKE CONCAT('%', ?, '%')
-                        AND ot.message LIKE '%Работы по графику%'
-                        AND ot.message LIKE CONCAT('%', ?, '%')
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-                    ");
-                    $stmt->bind_param('ss', $projectCode, $name);
-                }
+                // Count ONLY "Работы по графику" and "Формирование ИД" entries for PNR milestones
+                // This matches export logic where only scheduled work and ID formation count towards milestone fact
+                $stmt = $conn->prepare("
+                    SELECT COUNT(*) as days_count
+                    FROM ozna_tabel ot
+                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                    WHERE ot.message LIKE CONCAT('%', ?, '%')
+                    AND ot.message LIKE CONCAT('%', ?, '%')
+                    AND (ot.message LIKE '%Работы по графику%' OR ot.message LIKE '%Формирование ИД%')
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                ");
+                $stmt->bind_param('ss', $projectCode, $name);
                 $stmt->execute();
                 $result = $stmt->get_result();
                 $row = $result->fetch_assoc();
                 $pnrMilestonesFact[$name] = $row['days_count'] ?? 0;
+                
+                // Check if milestone is confirmed (user reported "Этап наладки завершен")
+                $stmt = $conn->prepare("
+                    SELECT COUNT(*) as confirmed_count
+                    FROM ozna_tabel ot
+                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                    WHERE ot.message LIKE CONCAT('%', ?, '%')
+                    AND ot.message LIKE '%Этап наладки завершен%'
+                    AND ot.message LIKE CONCAT('%', ?, '%')
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                ");
+                $stmt->bind_param('ss', $projectCode, $name);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $row = $result->fetch_assoc();
+                $pnrMilestonesConfirmed[$name] = ($row['confirmed_count'] ?? 0) > 0;
             }
+            
+            // Get TOTAL PNR fact count - same logic as report export
+            // Count all entries where message contains project code AND user has functional_direction = 'Пусконаладка'
+            // CRITICAL: Exclude Тестировщик from count (same as export logic)
+            // CRITICAL: Exclude milestone entries (вехи) - same as export CSV generation
+            $stmt = $conn->prepare("
+                SELECT COUNT(DISTINCT ot.id) as pnr_total_count
+                FROM ozna_tabel ot
+                INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                WHERE ot.message LIKE CONCAT('%', ?, '%')
+                AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                AND ot.message NOT LIKE '%Этап шеф-монтажа завершен%'
+                AND ot.message NOT LIKE '%Этап наладки завершен%'
+                AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $pnrTotalRow = $result->fetch_assoc();
+            $pnrTotalFactFromTabel = $pnrTotalRow['pnr_total_count'] ?? 0;
             
             // Get SMR milestones from project_milestones
             $smrMilestones = [];
@@ -5419,7 +7877,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $pnrMilestones = [];
             if ($cardData) {
                 $stmt = $conn->prepare("
-                    SELECT milestone_name, planned_hours 
+                    SELECT milestone_name, planned_hours, is_not_applicable, unit
                     FROM project_milestones 
                     WHERE project_code = ? AND work_type = 'ПНР'
                     ORDER BY order_index
@@ -5440,7 +7898,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $text .= '<b>Наименование:</b> ' . $project['project_name'] . '
 ';
             
-            $projectManager = ($cardData && $cardData['project_manager']) ? $cardData['project_manager'] : '-';
+            $projectManager = ($cardData && $cardData['project_manager_name']) ? $cardData['project_manager_name'] : '-';
             $text .= '<b>РП:</b> ' . $projectManager . '
 ';
             
@@ -5450,6 +7908,10 @@ class ProjectHandler implements CallbackHandlerInterface
             
             $businessUnit = ($cardData && $cardData['business_unit_name']) ? $cardData['business_unit_name'] : '-';
             $text .= '<b>БН:</b> ' . $businessUnit . '
+';
+            
+            $name1C = ($cardData && !empty($cardData['name_1c'])) ? $cardData['name_1c'] : '-';
+            $text .= '<b>Наименование 1С:</b> ' . $name1C . '
 ';
             
             // SMR Section
@@ -5524,55 +7986,245 @@ class ProjectHandler implements CallbackHandlerInterface
             $text .= '  • Проектная деятельность: ' . ($smrAdditional['delivery_organization_smr'] ?? 0) . ' дн.
 ';
             
+            // ==================== START: PNR SECTION ====================
+            // This section handles all PNR (Commissioning Works) metrics and display
+            // IMPORTANT: Do not modify this block when working on SMR/CMR sections
             // PNR Section
             $text .= '
 ⚙️ <b>ПНР (Пуско-наладочные работы)</b>
 ';
-            $pnrPlan = ($cardData && $cardData['pnr_planned_hours']) ? $cardData['pnr_planned_hours'] : 0;
-            $text .= '📊 План: ' . $pnrPlan . ' дн.
-';
             
-            // Standard PNR milestones (always the same for all projects)
+            // Calculate total plan from milestones (sum only where is_not_applicable = 0)
+            $pnrPlanTotal = 0;
             if (!empty($pnrMilestones)) {
-                $text .= '
-<b>Вехи:</b>
-';
-                foreach ($pnrMilestones as $idx => $milestone) {
-                    $num = $idx + 1;
-                    $milestoneName = $milestone['milestone_name'];
-                    $fact = $pnrMilestonesFact[$milestoneName] ?? 0;
-                    $plan = $milestone['planned_hours'] ?? 0;
-                    $text .= "  {$num}. {$milestoneName} (План: {$plan} дн. | Факт: {$fact} дн.)
-";
-                }
-            } else {
-                // Show standard milestones from process structure
-                $text .= '
-<b>Вехи:</b>
-';
-                $standardMilestones = [
-                    'Электрооборудование',
-                    'Пожарная сигнализация',
-                    'Охранная сигнализация',
-                    'Автоматизация',
-                    'Вентиляция и отопление',
-                    'Технологическое оборудование',
-                    'Метрология',
-                    'Режимная наладка',
-                    'Комплексное опробование'
-                ];
-                foreach ($standardMilestones as $idx => $milestoneName) {
-                    $num = $idx + 1;
-                    $fact = $pnrMilestonesFact[$milestoneName] ?? 0;
-                    $text .= "  {$num}. {$milestoneName} (План: 0 дн. | Факт: {$fact} дн.)
-";
+                foreach ($pnrMilestones as $milestone) {
+                    if (!$milestone['is_not_applicable'] && $milestone['planned_hours'] !== null) {
+                        $pnrPlanTotal += $milestone['planned_hours'];
+                    }
                 }
             }
             
-            // PNR Project Activity Section (without numbering)
-            $text .= '
-💼 <b>Проектная деятельность:</b> ' . ($pnrAdditional['project_activity_pnr'] ?? 0) . ' дн.
+            // Add mobilization and project activity to plan
+            $pnrPlanTotal += ($cardData && $cardData['pnr_mobilization'] !== null) ? $cardData['pnr_mobilization'] : 0;
+            $pnrPlanTotal += ($cardData && $cardData['pnr_project_activity'] !== null) ? $cardData['pnr_project_activity'] : 0;
+            
+            // Calculate total fact for PNR - use direct count from tabel by functional_direction
+            $pnrFactTotal = $pnrTotalFactFromTabel;
+            
+            $text .= '📊 План: ' . $pnrPlanTotal . ' дн. | Факт: ' . $pnrFactTotal . ' дн.
 ';
+            
+            // Calculate efficiency
+            if ($pnrPlanTotal > 0) {
+                $pnrEfficiency = round(($pnrPlanTotal / $pnrFactTotal) * 100, 1);
+                $pnrDeviation = $pnrFactTotal - $pnrPlanTotal;
+                
+                // Determine status emoji and text
+                if ($pnrEfficiency >= 100) {
+                    $efficiencyEmoji = '✅';
+                    $deviationText = '⬇️ ' . abs($pnrDeviation) . ' дн.';
+                } elseif ($pnrEfficiency >= 90) {
+                    $efficiencyEmoji = '⚠️';
+                    $deviationText = '⬆️ ' . $pnrDeviation . ' дн.';
+                } else {
+                    $efficiencyEmoji = '🔴';
+                    $deviationText = '⬆️ ' . $pnrDeviation . ' дн.';
+                }
+                
+                $text .= $efficiencyEmoji . ' Эффективность: ' . $pnrEfficiency . '% (' . $deviationText . ')
+';
+            }
+            
+            // Standard PNR milestones (always the same for all projects)
+            // Merge milestones from DB with standard list to show all milestones with plan or fact
+            $pnrStandardMilestones = [
+                'Электрооборудование',
+                'Пожарная сигнализация',
+                'Охранная сигнализация',
+                'Автоматизация',
+                'Вентиляция и отопление',
+                'Технологическое оборудование',
+                'Метрология',
+                'Режимная наладка',
+                'Комплексное опробование'
+            ];
+            
+            // Build a map of milestones from DB by name for quick lookup
+            $pnrMilestonesMap = [];
+            foreach ($pnrMilestones as $milestone) {
+                $pnrMilestonesMap[$milestone['milestone_name']] = $milestone;
+            }
+            
+            // Build merged list: for each standard milestone, get data from DB or use defaults
+            $pnrMergedMilestones = [];
+            foreach ($pnrStandardMilestones as $milestoneName) {
+                $milestoneData = $pnrMilestonesMap[$milestoneName] ?? null;
+                $pnrMergedMilestones[] = [
+                    'milestone_name' => $milestoneName,
+                    'planned_hours' => $milestoneData['planned_hours'] ?? null,
+                    'is_not_applicable' => $milestoneData['is_not_applicable'] ?? 0,
+                    'unit' => $milestoneData['unit'] ?? 'days'
+                ];
+            }
+            
+            // Now display merged milestones
+            if (!empty($pnrMergedMilestones)) {
+                $text .= '
+<b>Вехи:</b>
+';
+                $displayedCount = 0;
+                foreach ($pnrMergedMilestones as $idx => $milestone) {
+                    // Skip milestones marked as "not applicable"
+                    if ($milestone['is_not_applicable']) {
+                        continue;
+                    }
+                    
+                    $milestoneName = $milestone['milestone_name'];
+                    $fact = $pnrMilestonesFact[$milestoneName] ?? 0;
+                    $plan = $milestone['planned_hours'] ?? 0;
+                    $isConfirmed = $pnrMilestonesConfirmed[$milestoneName] ?? false;
+                    
+                    // Show milestone if it has plan OR has fact
+                    if ($plan > 0 || $fact > 0) {
+                        $displayedCount++;
+                        $unit = ($milestone['unit'] === 'hours') ? 'ч.' : 'дн.';
+                        
+                        // Add green checkmark if milestone is confirmed
+                        $confirmMark = $isConfirmed ? ' ✅' : '';
+                        
+                        $text .= "  {$displayedCount}. <b>{$milestoneName}</b>{$confirmMark}
+";
+                        $text .= "     📊 План: {$plan} {$unit} | Факт: {$fact} дн.
+";
+                        
+                        // Calculate efficiency for milestone
+                        if ($plan > 0 && $fact > 0) {
+                            $milestoneEfficiency = round(($plan / $fact) * 100, 1);
+                            $milestoneDeviation = $fact - $plan;
+                            
+                            // Determine status emoji and text
+                            if ($milestoneEfficiency >= 100) {
+                                $mEfficiencyEmoji = '✅';
+                                $mDeviationText = '⬇️ ' . abs($milestoneDeviation) . ' дн.';
+                            } elseif ($milestoneEfficiency >= 90) {
+                                $mEfficiencyEmoji = '⚠️';
+                                $mDeviationText = '⬆️ ' . $milestoneDeviation . ' дн.';
+                            } else {
+                                $mEfficiencyEmoji = '🔴';
+                                $mDeviationText = '⬆️ ' . $milestoneDeviation . ' дн.';
+                            }
+                            
+                            $text .= "     {$mEfficiencyEmoji} Эффективность: {$milestoneEfficiency}% ({$mDeviationText})
+";
+                        } elseif ($plan > 0 && $fact == 0) {
+                            $text .= "     ❓ Работы ещё не начаты
+";
+                        } elseif ($plan == 0 && $fact > 0) {
+                            $text .= "     ⚠️ План не установлен (⬆️ " . $fact . " дн.)
+";
+                        }
+                        
+                        $text .= "
+"; // Empty line between milestones
+                    }
+                }
+                
+                // If no milestones to display, show message
+                if ($displayedCount === 0) {
+                    $text .= '
+<i>Вехи не настроены</i>
+';
+                }
+            } else {
+                // No milestones configured - show message
+                $text .= '
+<b>Вехи:</b>
+';
+                $text .= '<i>Вехи не настроены</i>
+';
+            }
+            
+            // PNR Mobilization Section with plan-fact
+            $mobPlan = ($cardData && $cardData['pnr_mobilization'] !== null) ? $cardData['pnr_mobilization'] : 0;
+            $mobFact = ($pnrAdditional['mobilization_pnr'] ?? 0);
+            
+            $text .= '
+🚗 <b>Мобилизационные мероприятия</b>
+';
+            $text .= '<i>(Дорога, Инструктаж, Подготовка к служебной поездке, Сдача авансового отчета)</i>
+';
+            $text .= '📊 План: ' . $mobPlan . ' дн. | Факт: ' . $mobFact . ' дн.
+';
+            
+            // Calculate efficiency for mobilization
+            if ($mobPlan > 0 && $mobFact > 0) {
+                $mobEfficiency = round(($mobPlan / $mobFact) * 100, 1);
+                $mobDeviation = $mobFact - $mobPlan;
+                
+                if ($mobEfficiency >= 100) {
+                    $mobEmoji = '✅';
+                    $mobDevText = '⬇️ ' . abs($mobDeviation) . ' дн.';
+                } elseif ($mobEfficiency >= 90) {
+                    $mobEmoji = '⚠️';
+                    $mobDevText = '⬆️ ' . $mobDeviation . ' дн.';
+                } else {
+                    $mobEmoji = '🔴';
+                    $mobDevText = '⬆️ ' . $mobDeviation . ' дн.';
+                }
+                
+                $text .= $mobEmoji . ' Эффективность: ' . $mobEfficiency . '% (' . $mobDevText . ')
+';
+            } elseif ($mobPlan > 0 && $mobFact == 0) {
+                $text .= '❓ Работы ещё не начаты
+';
+            } elseif ($mobPlan == 0 && $mobFact > 0) {
+                $text .= '⚠️ План не установлен (⬆️ ' . $mobFact . ' дн.)
+';
+            } elseif ($mobPlan == 0 && $mobFact == 0) {
+                $text .= '⚠️ План не установлен
+';
+            }
+            
+            // PNR Project Activity Section with plan-fact
+            $projActPlan = ($cardData && $cardData['pnr_project_activity'] !== null) ? $cardData['pnr_project_activity'] : 0;
+            $projActFact = ($pnrAdditional['project_activity_pnr'] ?? 0);
+            
+            $text .= '
+📝 <b>Проектная деятельность</b>
+';
+            $text .= '<i>(Разработка графика работ, Разработка программы работ)</i>
+';
+            $text .= '📊 План: ' . $projActPlan . ' дн. | Факт: ' . $projActFact . ' дн.
+';
+            
+            // Calculate efficiency for project activity
+            if ($projActPlan > 0 && $projActFact > 0) {
+                $projActEfficiency = round(($projActPlan / $projActFact) * 100, 1);
+                $projActDeviation = $projActFact - $projActPlan;
+                
+                if ($projActEfficiency >= 100) {
+                    $projActEmoji = '✅';
+                    $projActDevText = '⬇️ ' . abs($projActDeviation) . ' дн.';
+                } elseif ($projActEfficiency >= 90) {
+                    $projActEmoji = '⚠️';
+                    $projActDevText = '⬆️ ' . $projActDeviation . ' дн.';
+                } else {
+                    $projActEmoji = '🔴';
+                    $projActDevText = '⬆️ ' . $projActDeviation . ' дн.';
+                }
+                
+                $text .= $projActEmoji . ' Эффективность: ' . $projActEfficiency . '% (' . $projActDevText . ')
+';
+            } elseif ($projActPlan > 0 && $projActFact == 0) {
+                $text .= '❓ Работы ещё не начаты
+';
+            } elseif ($projActPlan == 0 && $projActFact > 0) {
+                $text .= '⚠️ План не установлен (⬆️ ' . $projActFact . ' дн.)
+';
+            } elseif ($projActPlan == 0 && $projActFact == 0) {
+                $text .= '⚠️ План не установлен
+';
+            }
             
             // PNR Additional Work Section
             $text .= '
@@ -5584,13 +8236,96 @@ class ProjectHandler implements CallbackHandlerInterface
 ';
             $text .= '  • Гарантийные работы: ' . ($pnrAdditional['warranty_pnr'] ?? 0) . ' дн.
 ';
-            $additionalTotal = ($pnrAdditional['additional_work'] ?? 0) + ($pnrAdditional['pnr_stage_additional_work'] ?? 0);
-            $text .= '  • Дополнительные работы: ' . $additionalTotal . ' дн.
+            $additionalTotal = ($pnrAdditional['pnr_stage_additional_work'] ?? 0) + ($pnrAdditional['other_project_activity_pnr'] ?? 0);
+            $text .= '  • Прочие неучтённые работы: ' . $additionalTotal . ' дн.
 ';
-            $text .= '  • Мобилизационные мероприятия: ' . ($pnrAdditional['mobilization_pnr'] ?? 0) . ' дн.
+            
+            // DIAGNOSTIC: Calculate sum of all categories
+            $milestonesSum = 0;
+            foreach ($pnrMilestonesFact as $fact) {
+                $milestonesSum += $fact;
+            }
+            $categoriesSum = $milestonesSum + ($pnrAdditional['mobilization_pnr'] ?? 0) + ($pnrAdditional['project_activity_pnr'] ?? 0) + ($pnrAdditional['downtime_pnr'] ?? 0) + ($pnrAdditional['rk_comments_pnr'] ?? 0) + ($pnrAdditional['warranty_pnr'] ?? 0) + $additionalTotal;
+            
+            $text .= '
+🔍 <b>Диагностика (удалить после проверки):</b>
 ';
-            $text .= '  • Проектная деятельность: ' . ($pnrAdditional['delivery_organization_pnr'] ?? 0) . ' дн.
+            $text .= '<b>Вехи подробно:</b>
 ';
+            foreach ($pnrMilestoneNames as $name) {
+                $fact = $pnrMilestonesFact[$name] ?? 0;
+                $text .= '  - ' . $name . ': ' . $fact . ' дн.
+';
+            }
+            $text .= '  • Вехи (сумма): ' . $milestonesSum . ' дн.
+';
+            $text .= '  • Мобилизация: ' . ($pnrAdditional['mobilization_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Проектная деятельность: ' . ($pnrAdditional['project_activity_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Простои: ' . ($pnrAdditional['downtime_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Замечания РК: ' . ($pnrAdditional['rk_comments_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Гарантийные: ' . ($pnrAdditional['warranty_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • Доп.работы по системам: ' . ($pnrAdditional['pnr_stage_additional_work'] ?? 0) . ' дн.
+';
+            $text .= '  • Прочие проектные: ' . ($pnrAdditional['other_project_activity_pnr'] ?? 0) . ' дн.
+';
+            $text .= '  • <b>СУММА КАТЕГОРИЙ: ' . $categoriesSum . ' дн.</b>
+';
+            $text .= '  • <b>ОБЩИЙ ФАКТ: ' . $pnrFactTotal . ' дн.</b>
+';
+            $diff = $pnrFactTotal - $categoriesSum;
+            $text .= '  • <b>РАЗНИЦА: ' . $diff . ' дн.</b>
+';
+            
+            // Additional diagnostic: count by functional direction
+            $stmt = $conn->prepare("
+                SELECT JSON_EXTRACT(od.data, '$.functional_direction') as func_dir, COUNT(*) as cnt
+                FROM ozna_tabel ot
+                INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                WHERE ot.message LIKE CONCAT('%', ?, '%')
+                AND ot.message NOT LIKE '%Этап шеф-монтажа завершен%'
+                AND ot.message NOT LIKE '%Этап наладки завершен%'
+                AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                GROUP BY func_dir
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $text .= '
+<b>Распределение по functional_direction:</b>
+';
+            while ($row = $result->fetch_assoc()) {
+                $text .= '  - ' . ($row['func_dir'] ?: 'null') . ': ' . $row['cnt'] . ' дн.
+';
+            }
+            
+            // Show messages that matched other_project_activity_pnr
+            $stmt = $conn->prepare("
+                SELECT ot.message
+                FROM ozna_tabel ot
+                INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                WHERE ot.message LIKE CONCAT('%', ?, '%')
+                AND (ot.message LIKE '%Организация допоставки%' OR ot.message LIKE '%Прочее (Проектная деятельность)%')
+                AND ot.message NOT LIKE '%Дополнительные работы%'
+                AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            if ($result->num_rows > 0) {
+                $text .= '
+<b>Записи в "Прочие проектные":</b>
+';
+                while ($row = $result->fetch_assoc()) {
+                    $text .= '  - ' . $row['message'] . '
+';
+                }
+            }
+            // ==================== END: PNR SECTION ====================
             
             $text .= '
 📊 <b>Активность:</b>
@@ -5773,6 +8508,10 @@ class ProjectHandler implements CallbackHandlerInterface
             return $this->handleProjectCodeInput($chatId, $userId, $text, $conversation);
         }
         
+        if ($state === 'awaiting_nomenclature_group_name') {
+            return $this->handleNomenclatureGroupNameInput($chatId, $userId, $text, $conversation);
+        }
+        
         return null;
     }
     
@@ -5891,6 +8630,668 @@ class ProjectHandler implements CallbackHandlerInterface
             error_log("ProjectHandler::handleProjectCodeInput error: " . $e->getMessage());
             $conversation->stop();
             return $this->messageService->sendMessage($chatId, '❌ Ошибка при добавлении проекта: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show project constructor menu
+     */
+    private function showProjectConstructor(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get project info
+            $stmt = $conn->prepare("SELECT code as project_code, name as project_name FROM project WHERE code = ? LIMIT 1");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $project = $result->fetch_assoc();
+            
+            if (!$project) {
+                return $this->messageService->sendMessage($chatId, 'Проект не найден');
+            }
+            
+            // Get additional data from project_cards if exists
+            $stmt = $conn->prepare("
+                SELECT pc.*, c.name as customer_name, bu.name as business_unit_name
+                FROM project_cards pc
+                LEFT JOIN customers c ON pc.customer_id = c.id
+                LEFT JOIN business_units bu ON pc.business_unit_id = bu.id
+                WHERE pc.project_code = ?
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardData = $result->fetch_assoc();
+            
+            $text = '⚙️ <b>Конструктор проекта</b>
+
+';
+            $text .= '<b>Шифр:</b> ' . $project['project_code'] . '
+
+';
+            $text .= 'Выберите, что хотите редактировать:';
+            
+            $keyboard = [
+                [
+                    ['text' => '📝 Наименование проекта', 'callback_data' => 'proj_constructor_name_' . $projectCode]
+                ],
+                [
+                    ['text' => '👤 Руководитель проекта', 'callback_data' => 'proj_constructor_pm_' . $projectCode]
+                ],
+                [
+                    ['text' => '🏢 Заказчик', 'callback_data' => 'proj_constructor_customer_' . $projectCode]
+                ],
+                [
+                    ['text' => '🏭 Бизнес-направление', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                ],
+                [
+                    ['text' => '🔧 ШМР (СМР): Плановые трудозатраты', 'callback_data' => 'proj_constructor_smr_hours_' . $projectCode]
+                ],
+                [
+                    ['text' => '⚙️ ПНР: Плановые трудозатраты', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
+                ],
+                [
+                    ['text' => '💼 Наименование 1С', 'callback_data' => 'proj_constructor_1c_name_' . $projectCode]
+                ],
+                [
+                    ['text' => '⬅️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showProjectConstructor error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка загрузки конструктора: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Handle constructor callbacks
+     */
+    private function handleConstructorCallback($callbackQuery, string $callbackData, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        
+        // Extract action and project code
+        if (str_starts_with($callbackData, 'proj_constructor_name_')) {
+            $projectCode = str_replace('proj_constructor_name_', '', $callbackData);
+            return $this->showNomenclatureGroupsMenu($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_pm_')) {
+            $projectCode = str_replace('proj_constructor_pm_', '', $callbackData);
+            return $this->showProjectManagersMenu($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_customer_')) {
+            $projectCode = str_replace('proj_constructor_customer_', '', $callbackData);
+            return $this->showCustomersMenu($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_bu_')) {
+            $projectCode = str_replace('proj_constructor_bu_', '', $callbackData);
+            return $this->showBusinessUnitsMenu($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_1c_name_')) {
+            $projectCode = str_replace('proj_constructor_1c_name_', '', $callbackData);
+            return $this->show1CNameMenu($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_pnr_hours_')) {
+            $projectCode = str_replace('proj_constructor_pnr_hours_', '', $callbackData);
+            return $this->showPNRMilestonesMenu($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_nomenclature_select_')) {
+            // Format: proj_nomenclature_select_{groupId}_{projectCode}
+            $parts = explode('_', str_replace('proj_nomenclature_select_', '', $callbackData), 2);
+            if (count($parts) === 2) {
+                $groupId = (int)$parts[0];
+                $projectCode = $parts[1];
+                return $this->selectNomenclatureGroup($chatId, $userId, $projectCode, $groupId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_nomenclature_add_')) {
+            $projectCode = str_replace('proj_nomenclature_add_', '', $callbackData);
+            return $this->promptAddNomenclatureGroup($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_nomenclature_back_')) {
+            $projectCode = str_replace('proj_nomenclature_back_', '', $callbackData);
+            return $this->showProjectConstructor($chatId, $userId, $projectCode);
+        }
+        
+        // Project Manager callbacks
+        if (str_starts_with($callbackData, 'proj_pm_select_')) {
+            // Format: proj_pm_select_{pmId}_{projectCode}
+            $remaining = substr($callbackData, strlen('proj_pm_select_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $pmId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->selectProjectManager($chatId, $userId, $projectCode, $pmId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pm_add_')) {
+            $projectCode = str_replace('proj_pm_add_', '', $callbackData);
+            return $this->promptAddProjectManager($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pm_back_')) {
+            $projectCode = str_replace('proj_pm_back_', '', $callbackData);
+            return $this->showProjectConstructor($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pm_manage_')) {
+            $projectCode = str_replace('proj_pm_manage_', '', $callbackData);
+            return $this->showManageProjectManagers($chatId, $userId, $projectCode);
+        }
+        
+        // Check specific delete callbacks first
+        if (str_starts_with($callbackData, 'proj_pm_delete_yes_')) {
+            $remaining = substr($callbackData, strlen('proj_pm_delete_yes_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $pmId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->deleteProjectManager($chatId, $userId, $projectCode, $pmId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pm_delete_no_')) {
+            $remaining = substr($callbackData, strlen('proj_pm_delete_no_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->showManageProjectManagers($chatId, $userId, $projectCode);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pm_delete_')) {
+            $remaining = substr($callbackData, strlen('proj_pm_delete_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $pmId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->confirmDeleteProjectManager($chatId, $userId, $projectCode, $pmId);
+            }
+        }
+        
+        // Customer callbacks
+        if (str_starts_with($callbackData, 'proj_customer_select_')) {
+            $remaining = substr($callbackData, strlen('proj_customer_select_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $customerId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->selectCustomer($chatId, $userId, $projectCode, $customerId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_customer_add_')) {
+            $projectCode = str_replace('proj_customer_add_', '', $callbackData);
+            return $this->promptAddCustomer($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_customer_back_')) {
+            $projectCode = str_replace('proj_customer_back_', '', $callbackData);
+            return $this->showProjectConstructor($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_customer_manage_')) {
+            $projectCode = str_replace('proj_customer_manage_', '', $callbackData);
+            return $this->showManageCustomers($chatId, $userId, $projectCode);
+        }
+        
+        // Check specific delete callbacks first
+        if (str_starts_with($callbackData, 'proj_customer_delete_yes_')) {
+            $remaining = substr($callbackData, strlen('proj_customer_delete_yes_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $customerId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->deleteCustomer($chatId, $userId, $projectCode, $customerId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_customer_delete_no_')) {
+            $remaining = substr($callbackData, strlen('proj_customer_delete_no_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->showManageCustomers($chatId, $userId, $projectCode);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_customer_delete_')) {
+            $remaining = substr($callbackData, strlen('proj_customer_delete_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $customerId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->confirmDeleteCustomer($chatId, $userId, $projectCode, $customerId);
+            }
+        }
+        
+        // Business Unit callbacks
+        if (str_starts_with($callbackData, 'proj_bu_select_')) {
+            $remaining = substr($callbackData, strlen('proj_bu_select_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $buId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->selectBusinessUnit($chatId, $userId, $projectCode, $buId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_bu_add_')) {
+            $projectCode = str_replace('proj_bu_add_', '', $callbackData);
+            return $this->promptAddBusinessUnit($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_bu_back_')) {
+            $projectCode = str_replace('proj_bu_back_', '', $callbackData);
+            return $this->showProjectConstructor($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_bu_manage_')) {
+            $projectCode = str_replace('proj_bu_manage_', '', $callbackData);
+            return $this->showManageBusinessUnits($chatId, $userId, $projectCode);
+        }
+        
+        // Check specific delete callbacks first
+        if (str_starts_with($callbackData, 'proj_bu_delete_yes_')) {
+            $remaining = substr($callbackData, strlen('proj_bu_delete_yes_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $buId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->deleteBusinessUnit($chatId, $userId, $projectCode, $buId);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_bu_delete_no_')) {
+            $remaining = substr($callbackData, strlen('proj_bu_delete_no_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->showManageBusinessUnits($chatId, $userId, $projectCode);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_bu_delete_')) {
+            $remaining = substr($callbackData, strlen('proj_bu_delete_'));
+            $firstUnderscore = strpos($remaining, '_');
+            if ($firstUnderscore !== false) {
+                $buId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                return $this->confirmDeleteBusinessUnit($chatId, $userId, $projectCode, $buId);
+            }
+        }
+        
+        // 1C Name callbacks
+        if (str_starts_with($callbackData, 'proj_1c_set_')) {
+            $projectCode = str_replace('proj_1c_set_', '', $callbackData);
+            return $this->prompt1CName($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_1c_clear_')) {
+            $projectCode = str_replace('proj_1c_clear_', '', $callbackData);
+            return $this->clear1CName($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_1c_back_')) {
+            $projectCode = str_replace('proj_1c_back_', '', $callbackData);
+            return $this->showProjectConstructor($chatId, $userId, $projectCode);
+        }
+        
+        // PNR Milestones callbacks
+        if (str_starts_with($callbackData, 'proj_pnr_milestone_')) {
+            $remaining = substr($callbackData, strlen('proj_pnr_milestone_'));
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) === 2) {
+                $milestoneIndex = (int)$parts[0];
+                $projectCode = $parts[1];
+                return $this->showEditPNRMilestone($chatId, $userId, $projectCode, $milestoneIndex, $conversation);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_set_')) {
+            $remaining = substr($callbackData, strlen('proj_pnr_set_'));
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) === 2) {
+                $milestoneIndex = (int)$parts[0];
+                $projectCode = $parts[1];
+                return $this->promptPNRMilestoneHours($chatId, $userId, $projectCode, $milestoneIndex, $conversation);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_notappl_')) {
+            $remaining = substr($callbackData, strlen('proj_pnr_notappl_'));
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) === 2) {
+                $milestoneIndex = (int)$parts[0];
+                $projectCode = $parts[1];
+                return $this->setPNRMilestoneNotApplicable($chatId, $userId, $projectCode, $milestoneIndex);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_clear_')) {
+            $remaining = substr($callbackData, strlen('proj_pnr_clear_'));
+            $parts = explode('_', $remaining, 2);
+            if (count($parts) === 2) {
+                $milestoneIndex = (int)$parts[0];
+                $projectCode = $parts[1];
+                return $this->clearPNRMilestone($chatId, $userId, $projectCode, $milestoneIndex);
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_back_')) {
+            $projectCode = str_replace('proj_pnr_back_', '', $callbackData);
+            return $this->showPNRMilestonesMenu($chatId, $userId, $projectCode);
+        }
+        
+        // PNR Mobilization callbacks
+        if (str_starts_with($callbackData, 'proj_pnr_mobilization_')) {
+            $projectCode = str_replace('proj_pnr_mobilization_', '', $callbackData);
+            return $this->showEditPNRMobilization($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_mob_set_')) {
+            $projectCode = str_replace('proj_pnr_mob_set_', '', $callbackData);
+            return $this->promptPNRMobilization($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_mob_clear_')) {
+            $projectCode = str_replace('proj_pnr_mob_clear_', '', $callbackData);
+            return $this->clearPNRMobilization($chatId, $userId, $projectCode);
+        }
+        
+        // PNR Project Activity callbacks
+        if (str_starts_with($callbackData, 'proj_pnr_project_activity_')) {
+            $projectCode = str_replace('proj_pnr_project_activity_', '', $callbackData);
+            return $this->showEditPNRProjectActivity($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_projact_set_')) {
+            $projectCode = str_replace('proj_pnr_projact_set_', '', $callbackData);
+            return $this->promptPNRProjectActivity($chatId, $userId, $projectCode, $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_pnr_projact_clear_')) {
+            $projectCode = str_replace('proj_pnr_projact_clear_', '', $callbackData);
+            return $this->clearPNRProjectActivity($chatId, $userId, $projectCode);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_nomenclature_manage_')) {
+            $projectCode = str_replace('proj_nomenclature_manage_', '', $callbackData);
+            return $this->showManageNomenclatureGroups($chatId, $userId, $projectCode);
+        }
+        
+        // Check more specific prefixes FIRST before generic 'delete_'
+        if (str_starts_with($callbackData, 'proj_nomenclature_delete_yes_')) {
+            // Format: proj_nomenclature_delete_yes_{groupId}_{projectCode}
+            error_log("DELETE YES callback: " . $callbackData);
+            $remaining = substr($callbackData, strlen('proj_nomenclature_delete_yes_'));
+            error_log("Remaining after prefix: " . $remaining);
+            $firstUnderscore = strpos($remaining, '_');
+            error_log("First underscore position: " . ($firstUnderscore !== false ? $firstUnderscore : 'NOT FOUND'));
+            if ($firstUnderscore !== false) {
+                $groupId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                error_log("Parsed - GroupId: {$groupId}, ProjectCode: {$projectCode}");
+                return $this->deleteNomenclatureGroup($chatId, $userId, $projectCode, $groupId);
+            } else {
+                error_log("Failed to parse delete_yes callback data");
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка парсинга данных');
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_nomenclature_delete_no_')) {
+            // Format: proj_nomenclature_delete_no_{groupId}_{projectCode}
+            error_log("DELETE NO callback: " . $callbackData);
+            $remaining = substr($callbackData, strlen('proj_nomenclature_delete_no_'));
+            error_log("Remaining after prefix: " . $remaining);
+            $firstUnderscore = strpos($remaining, '_');
+            error_log("First underscore position: " . ($firstUnderscore !== false ? $firstUnderscore : 'NOT FOUND'));
+            if ($firstUnderscore !== false) {
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                error_log("Parsed - ProjectCode: {$projectCode}");
+                return $this->showManageNomenclatureGroups($chatId, $userId, $projectCode);
+            } else {
+                error_log("Failed to parse delete_no callback data");
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка парсинга данных');
+            }
+        }
+        
+        if (str_starts_with($callbackData, 'proj_nomenclature_delete_')) {
+            // Format: proj_nomenclature_delete_{groupId}_{projectCode}
+            error_log("DELETE CONFIRM callback: " . $callbackData);
+            $remaining = substr($callbackData, strlen('proj_nomenclature_delete_'));
+            error_log("Remaining after prefix: " . $remaining);
+            $firstUnderscore = strpos($remaining, '_');
+            error_log("First underscore position: " . ($firstUnderscore !== false ? $firstUnderscore : 'NOT FOUND'));
+            if ($firstUnderscore !== false) {
+                $groupId = (int)substr($remaining, 0, $firstUnderscore);
+                $projectCode = substr($remaining, $firstUnderscore + 1);
+                error_log("Parsed - GroupId: {$groupId}, ProjectCode: {$projectCode}");
+                return $this->confirmDeleteNomenclatureGroup($chatId, $userId, $projectCode, $groupId);
+            } else {
+                error_log("Failed to parse delete callback data");
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка парсинга данных');
+            }
+        }
+        
+        return $this->messageService->sendMessage($chatId, 'Функция в разработке');
+    }
+    
+    /**
+     * Show nomenclature groups selection menu
+     */
+    private function showNomenclatureGroupsMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Create table if not exists
+            $conn->query("
+                CREATE TABLE IF NOT EXISTS project_nomenclature_groups (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL UNIQUE,
+                    created_by BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+            
+            // Get all nomenclature groups
+            $result = $conn->query("SELECT id, name FROM project_nomenclature_groups ORDER BY name");
+            $groups = [];
+            while ($row = $result->fetch_assoc()) {
+                $groups[] = $row;
+            }
+            
+            $text = '📝 <b>Наименование проекта</b>
+
+';
+            $text .= 'Выберите номенклатурную группу:';
+            
+            $keyboard = [];
+            foreach ($groups as $group) {
+                $keyboard[] = [
+                    ['text' => $group['name'], 'callback_data' => 'proj_nomenclature_select_' . $group['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '➕ Добавить группу', 'callback_data' => 'proj_nomenclature_add_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '🗑️ Управление группами', 'callback_data' => 'proj_nomenclature_manage_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_nomenclature_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showNomenclatureGroupsMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Select nomenclature group for project
+     */
+    private function selectNomenclatureGroup(string $chatId, int $userId, string $projectCode, int $groupId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get group name
+            $stmt = $conn->prepare("SELECT name FROM project_nomenclature_groups WHERE id = ?");
+            $stmt->bind_param('i', $groupId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $group = $result->fetch_assoc();
+            
+            if (!$group) {
+                return $this->messageService->sendMessage($chatId, '❌ Группа не найдена');
+            }
+            
+            // Update project name
+            $stmt = $conn->prepare("UPDATE project SET name = ? WHERE code = ?");
+            $stmt->bind_param('ss', $group['name'], $projectCode);
+            $stmt->execute();
+            
+            $text = '✅ <b>Наименование обновлено</b>
+
+';
+            $text .= 'Проект: ' . $projectCode . '
+';
+            $text .= 'Наименование: ' . $group['name'];
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::selectNomenclatureGroup error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to add new nomenclature group
+     */
+    private function promptAddNomenclatureGroup(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_nomenclature_group_name';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '➕ <b>Добавить номенклатурную группу</b>
+
+';
+        $text .= 'Введите название новой группы:';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_nomenclature_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle nomenclature group name input
+     */
+    private function handleNomenclatureGroupNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: проект не найден');
+            }
+            
+            $groupName = trim($text);
+            
+            if (empty($groupName)) {
+                $errorText = '❌ Название группы не может быть пустым.
+
+Введите название группы:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_nomenclature_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Check if group already exists
+            $stmt = $conn->prepare("SELECT id FROM project_nomenclature_groups WHERE name = ?");
+            $stmt->bind_param('s', $groupName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->fetch_assoc()) {
+                $errorText = '❌ Группа с таким названием уже существует.
+
+Введите другое название:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_nomenclature_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Insert new group
+            $stmt = $conn->prepare("INSERT INTO project_nomenclature_groups (name, created_by) VALUES (?, ?)");
+            $stmt->bind_param('si', $groupName, $userId);
+            $stmt->execute();
+            
+            $conversation->stop();
+            
+            $successText = '✅ <b>Группа добавлена</b>
+
+';
+            $successText .= 'Название: ' . $groupName;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К выбору группы', 'callback_data' => 'proj_constructor_name_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleNomenclatureGroupNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
         }
     }
 }

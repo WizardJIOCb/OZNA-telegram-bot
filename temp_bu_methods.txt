@@ -1,0 +1,382 @@
+
+    /**
+     * Show business units selection menu
+     */
+    private function showBusinessUnitsMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all business units
+            $result = $conn->query("SELECT id, name FROM business_units ORDER BY name");
+            $businessUnits = [];
+            while ($row = $result->fetch_assoc()) {
+                $businessUnits[] = $row;
+            }
+            
+            $text = '🏭 <b>Бизнес-направление</b>
+
+';
+            $text .= 'Выберите бизнес-направление:';
+            
+            $keyboard = [];
+            foreach ($businessUnits as $bu) {
+                $keyboard[] = [
+                    ['text' => $bu['name'], 'callback_data' => 'proj_bu_select_' . $bu['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '➕ Добавить БН', 'callback_data' => 'proj_bu_add_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '🗑️ Управление БН', 'callback_data' => 'proj_bu_manage_' . $projectCode]
+            ];
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_bu_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showBusinessUnitsMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Select business unit for project
+     */
+    private function selectBusinessUnit(string $chatId, int $userId, string $projectCode, int $buId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get business unit name
+            $stmt = $conn->prepare("SELECT name FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $bu = $result->fetch_assoc();
+            
+            if (!$bu) {
+                return $this->messageService->sendMessage($chatId, '❌ БН не найдено');
+            }
+            
+            // Update project card with business unit
+            // First check if project_cards record exists
+            $stmt = $conn->prepare("SELECT id FROM project_cards WHERE project_code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $cardExists = $result->fetch_assoc();
+            
+            if ($cardExists) {
+                // Update existing card
+                $stmt = $conn->prepare("UPDATE project_cards SET business_unit_id = ? WHERE project_code = ?");
+                $stmt->bind_param('is', $buId, $projectCode);
+            } else {
+                // Create new card - need to get project name first
+                $stmt = $conn->prepare("SELECT name FROM project WHERE code = ?");
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $project = $result->fetch_assoc();
+                $projectName = $project['name'] ?? $projectCode;
+                
+                $stmt = $conn->prepare("INSERT INTO project_cards (project_code, project_name, business_unit_id, created_by) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param('ssii', $projectCode, $projectName, $buId, $userId);
+            }
+            $stmt->execute();
+            
+            $text = '✅ <b>БН назначено</b>
+
+';
+            $text .= 'Проект: ' . $projectCode . '
+';
+            $text .= 'БН: ' . $bu['name'];
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::selectBusinessUnit error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to add new business unit
+     */
+    private function promptAddBusinessUnit(string $chatId, int $userId, string $projectCode, Conversation $conversation): ServerResponse
+    {
+        $conversation->notes['state'] = 'awaiting_business_unit_name';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->update();
+        
+        $text = '➕ <b>Добавить бизнес-направление</b>
+
+';
+        $text .= 'Введите название БН:';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle business unit name input
+     */
+    public function handleBusinessUnitNameInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            
+            if (!$projectCode) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: проект не найден');
+            }
+            
+            $buName = trim($text);
+            
+            if (empty($buName)) {
+                $errorText = '❌ Название не может быть пустым.
+
+Введите название БН:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Check if business unit already exists
+            $stmt = $conn->prepare("SELECT id FROM business_units WHERE name = ?");
+            $stmt->bind_param('s', $buName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->fetch_assoc()) {
+                $errorText = '❌ БН с таким названием уже существует.
+
+Введите другое название:';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            // Insert new business unit
+            $stmt = $conn->prepare("INSERT INTO business_units (name) VALUES (?)");
+            $stmt->bind_param('s', $buName);
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>БН добавлено</b>
+
+';
+            $successText .= 'Название: ' . $buName;
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К выбору БН', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleBusinessUnitNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка при добавлении БН: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show manage business units menu
+     */
+    private function showManageBusinessUnits(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get all business units
+            $result = $conn->query("SELECT id, name FROM business_units ORDER BY name");
+            $businessUnits = [];
+            while ($row = $result->fetch_assoc()) {
+                $businessUnits[] = $row;
+            }
+            
+            if (empty($businessUnits)) {
+                $text = '📋 <b>Управление БН</b>
+
+';
+                $text .= 'Список пуст. Добавьте первое БН.';
+                
+                $keyboard = [
+                    [
+                        ['text' => '➕ Добавить БН', 'callback_data' => 'proj_bu_add_' . $projectCode]
+                    ],
+                    [
+                        ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                    ]
+                ];
+                
+                return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            }
+            
+            $text = '🗑️ <b>Управление БН</b>
+
+';
+            $text .= 'Выберите БН для удаления:';
+            
+            $keyboard = [];
+            foreach ($businessUnits as $bu) {
+                $keyboard[] = [
+                    ['text' => '🗑️ ' . $bu['name'], 'callback_data' => 'proj_bu_delete_' . $bu['id'] . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ Назад', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showManageBusinessUnits error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Confirm deletion of business unit
+     */
+    private function confirmDeleteBusinessUnit(string $chatId, int $userId, string $projectCode, int $buId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get business unit name
+            $stmt = $conn->prepare("SELECT name FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $bu = $result->fetch_assoc();
+            
+            if (!$bu) {
+                return $this->messageService->sendMessage($chatId, '❌ БН не найдено');
+            }
+            
+            // Check if business unit is used by any projects
+            $stmt = $conn->prepare("SELECT COUNT(*) as count FROM project_cards WHERE business_unit_id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $usage = $result->fetch_assoc();
+            $usageCount = $usage['count'] ?? 0;
+            
+            $text = '⚠️ <b>Подтвердите удаление</b>
+
+БН: <b>' . $bu['name'] . '</b>
+
+';
+            
+            if ($usageCount > 0) {
+                $text .= '⚠️ Это БН используется в <b>' . $usageCount . '</b> проект(ах).
+При удалении назначения будут сброшены.
+
+';
+            }
+            
+            $text .= 'Вы уверены?';
+            
+            $keyboard = [
+                [
+                    ['text' => '✅ Да, удалить', 'callback_data' => 'proj_bu_delete_yes_' . $buId . '_' . $projectCode]
+                ],
+                [
+                    ['text' => '❌ Отмена', 'callback_data' => 'proj_bu_delete_no_' . $buId . '_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::confirmDeleteBusinessUnit error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Delete business unit
+     */
+    private function deleteBusinessUnit(string $chatId, int $userId, string $projectCode, int $buId): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get business unit name before deletion
+            $stmt = $conn->prepare("SELECT name FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $bu = $result->fetch_assoc();
+            
+            if (!$bu) {
+                return $this->messageService->sendMessage($chatId, '❌ БН не найдено');
+            }
+            
+            $buName = $bu['name'];
+            
+            // Clear business unit from project cards
+            $stmt = $conn->prepare("UPDATE project_cards SET business_unit_id = NULL WHERE business_unit_id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            
+            // Delete the business unit
+            $stmt = $conn->prepare("DELETE FROM business_units WHERE id = ?");
+            $stmt->bind_param('i', $buId);
+            $stmt->execute();
+            
+            $text = '✅ <b>БН удалено</b>
+
+БН "' . $buName . '" успешно удалено.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К управлению БН', 'callback_data' => 'proj_bu_manage_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К выбору БН', 'callback_data' => 'proj_constructor_bu_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::deleteBusinessUnit error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }

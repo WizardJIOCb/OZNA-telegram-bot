@@ -5,6 +5,7 @@ namespace Longman\TelegramBot\Commands\SystemCommands\Handlers;
 use Longman\TelegramBot\Commands\SystemCommands\Services\CallbackHandlerInterface;
 use Longman\TelegramBot\Commands\SystemCommands\Services\AdminService;
 use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService;
 use Longman\TelegramBot\Entities\CallbackQuery;
 use Longman\TelegramBot\Entities\ServerResponse;
 use Longman\TelegramBot\Conversation;
@@ -248,21 +249,8 @@ class AdminHandler implements CallbackHandlerInterface
         
         $keyboard = [];
         
-        // Супервайзеры (уровень 2) - нет специального меню, используют "Управление проектом"
-        if ($accessLevel === 2) { // ACCESS_LEVEL_SUPERVISOR
-            // Направляем в "Управление проектом"
-            return $this->messageService->sendMessage(
-                $chatId,
-                "ℹ️ <b>Панель супервайзера</b>\n\nВаш уровень доступа: {$levelName}\n\nИспользуйте меню <b>🛠️ Управление проектом</b> для доступа к функциям.",
-                [
-                    [
-                        ['text' => '🛠️ Перейти в Управление проектом', 'callback_data' => 'category_УправлениеПроектом']
-                    ]
-                ]
-            );
-        }
-        // Администраторы и Суперадмины видят полное меню
-        else if ($accessLevel >= 3) { // ACCESS_LEVEL_ADMIN or higher
+        // Супервайзеры, Администраторы и Суперадмины видят полное меню
+        if ($accessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
             $keyboard[] = [
                 ['text' => '📋 Управление проектами', 'callback_data' => 'category_Админка_Проекты']
             ];
@@ -288,10 +276,12 @@ class AdminHandler implements CallbackHandlerInterface
                 ];
             }
             
-            // Управление уровнями доступа - для администраторов и суперадминов
-            $keyboard[] = [
-                ['text' => '🔐 Управление уровнями доступа', 'callback_data' => 'category_УровеньДоступа_Управление']
-            ];
+            // Управление уровнями доступа - для администраторов и выше
+            if ($accessLevel >= DatabaseService::ACCESS_LEVEL_ADMIN) {
+                $keyboard[] = [
+                    ['text' => '🔐 Управление уровнями доступа', 'callback_data' => 'category_УровеньДоступа_Управление']
+                ];
+            }
             
             // AI-помощник - ВРЕМЕННО ОТКЛЮЧЕН (Grok API не доступен из России)
             // $keyboard[] = [
@@ -303,9 +293,16 @@ class AdminHandler implements CallbackHandlerInterface
             // - "Очистить список администраторов"
             // - "🤖 AI-помощник" (Grok API не работает из России из-за санкций)
 
-            $text = "⚙️ <b>Панель администратора</b> " .
-                "Ваш уровень доступа: {$levelName}\n\n" .
-                "Выберите действие:";
+            // Разные заголовки для разных уровней
+            if ($accessLevel === DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
+                $text = "⚙️ <b>Панель супервайзера</b> " .
+                    "Ваш уровень доступа: {$levelName}\n\n" .
+                    "Выберите действие:";
+            } else {
+                $text = "⚙️ <b>Панель администратора</b> " .
+                    "Ваш уровень доступа: {$levelName}\n\n" .
+                    "Выберите действие:";
+            }
         }
         
         $text = $this->ensureUtf8Encoding($text);
@@ -371,10 +368,10 @@ class AdminHandler implements CallbackHandlerInterface
         $chatId = $callbackQuery->getMessage()->getChat()->getId();
         $userId = $callbackQuery->getFrom()->getId();
         
-        // Проверка: управление проектами доступно только Администраторам и Суперадминам
+        // Проверка: управление проектами доступно только Супервайзерам, Администраторам и Суперадминам
         $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
-        if ($userAccessLevel < 3) { // ACCESS_LEVEL_ADMIN
-            $text = '❌ <b>Доступ ограничен</b>\n\nУправление проектами доступно только Администраторам и Суперадминам.';
+        if ($userAccessLevel < DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
+            $text = '❌ <b>Доступ ограничен</b>\n\nУправление проектами доступно только Супервайзерам, Администраторам и Суперадминам.';
             $text = $this->ensureUtf8Encoding($text);
             return $this->messageService->sendMessage($chatId, $text);
         }

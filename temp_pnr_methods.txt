@@ -1,0 +1,420 @@
+
+    /**
+     * Get standard PNR milestone names
+     */
+    private function getPNRMilestoneNames(): array
+    {
+        return [
+            'Электрооборудование',
+            'Пожарная сигнализация',
+            'Охранная сигнализация',
+            'Автоматизация',
+            'Вентиляция и отопление',
+            'Технологическое оборудование',
+            'Метрология',
+            'Режимная наладка',
+            'Комплексное опробование'
+        ];
+    }
+    
+    /**
+     * Show PNR milestones menu with visual indicators
+     */
+    private function showPNRMilestonesMenu(string $chatId, int $userId, string $projectCode): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            
+            // Get project info
+            $stmt = $conn->prepare("SELECT code, name FROM project WHERE code = ?");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $project = $result->fetch_assoc();
+            
+            if (!$project) {
+                return $this->messageService->sendMessage($chatId, '❌ Проект не найден');
+            }
+            
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            // Get existing milestones from database
+            $stmt = $conn->prepare("
+                SELECT milestone_name, planned_hours, is_not_applicable, unit
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР'
+            ");
+            $stmt->bind_param('s', $projectCode);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            $existingMilestones = [];
+            while ($row = $result->fetch_assoc()) {
+                $existingMilestones[$row['milestone_name']] = $row;
+            }
+            
+            $text = '⚙️ <b>ПНР: Плановые трудозатраты</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            $text .= 'Настройте плановые трудозатраты для каждой вехи:
+
+';
+            
+            $keyboard = [];
+            foreach ($milestoneNames as $index => $milestoneName) {
+                $milestone = $existingMilestones[$milestoneName] ?? null;
+                
+                // Determine icon and text based on status
+                if ($milestone && $milestone['is_not_applicable']) {
+                    $icon = '❌';
+                    $buttonText = $icon . ' ' . $milestoneName . ' (не предусмотрено)';
+                } elseif ($milestone && $milestone['planned_hours'] !== null) {
+                    $icon = '📊';
+                    $unit = ($milestone['unit'] === 'hours') ? 'ч.' : 'дн.';
+                    $buttonText = $icon . ' ' . $milestoneName . ' (' . $milestone['planned_hours'] . ' ' . $unit . ')';
+                } else {
+                    $icon = '❓';
+                    $buttonText = $icon . ' ' . $milestoneName;
+                }
+                
+                $keyboard[] = [
+                    ['text' => $buttonText, 'callback_data' => 'proj_pnr_milestone_' . $index . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showPNRMilestonesMenu error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Show edit menu for specific PNR milestone
+     */
+    private function showEditPNRMilestone(string $chatId, int $userId, string $projectCode, int $milestoneIndex, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            if (!isset($milestoneNames[$milestoneIndex])) {
+                return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+            }
+            
+            $milestoneName = $milestoneNames[$milestoneIndex];
+            
+            // Get existing milestone data
+            $stmt = $conn->prepare("
+                SELECT planned_hours, is_not_applicable, unit
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $milestone = $result->fetch_assoc();
+            
+            $text = '⚙️ <b>' . $milestoneName . '</b>
+
+';
+            $text .= '<b>Проект:</b> ' . $projectCode . '
+
+';
+            
+            if ($milestone && $milestone['is_not_applicable']) {
+                $text .= '📌 <b>Статус:</b> Не предусмотрено проектом';
+            } elseif ($milestone && $milestone['planned_hours'] !== null) {
+                $unit = ($milestone['unit'] === 'hours') ? 'часов' : 'дней';
+                $text .= '📌 <b>Текущее значение:</b> ' . $milestone['planned_hours'] . ' ' . $unit;
+            } else {
+                $text .= '⚠️ Трудозатраты не установлены';
+            }
+            
+            $keyboard = [];
+            
+            if ($milestone && $milestone['is_not_applicable']) {
+                // Currently marked as "not applicable"
+                $keyboard[] = [
+                    ['text' => '✏️ Установить трудозатраты', 'callback_data' => 'proj_pnr_set_' . $milestoneIndex . '_' . $projectCode]
+                ];
+            } elseif ($milestone && $milestone['planned_hours'] !== null) {
+                // Has value set
+                $keyboard[] = [
+                    ['text' => '✏️ Изменить трудозатраты', 'callback_data' => 'proj_pnr_set_' . $milestoneIndex . '_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '❌ Не предусмотрено проектом', 'callback_data' => 'proj_pnr_notappl_' . $milestoneIndex . '_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '🗑️ Очистить', 'callback_data' => 'proj_pnr_clear_' . $milestoneIndex . '_' . $projectCode]
+                ];
+            } else {
+                // Not set yet
+                $keyboard[] = [
+                    ['text' => '➕ Установить трудозатраты', 'callback_data' => 'proj_pnr_set_' . $milestoneIndex . '_' . $projectCode]
+                ];
+                $keyboard[] = [
+                    ['text' => '❌ Не предусмотрено проектом', 'callback_data' => 'proj_pnr_notappl_' . $milestoneIndex . '_' . $projectCode]
+                ];
+            }
+            
+            $keyboard[] = [
+                ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::showEditPNRMilestone error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Prompt user to enter PNR milestone hours
+     */
+    private function promptPNRMilestoneHours(string $chatId, int $userId, string $projectCode, int $milestoneIndex, Conversation $conversation): ServerResponse
+    {
+        $milestoneNames = $this->getPNRMilestoneNames();
+        
+        if (!isset($milestoneNames[$milestoneIndex])) {
+            return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+        }
+        
+        $milestoneName = $milestoneNames[$milestoneIndex];
+        
+        $conversation->notes['state'] = 'awaiting_pnr_milestone_hours';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->notes['milestone_index'] = $milestoneIndex;
+        $conversation->notes['milestone_name'] = $milestoneName;
+        $conversation->update();
+        
+        $text = '✏️ <b>Плановые трудозатраты</b>
+
+';
+        $text .= '<b>Веха:</b> ' . $milestoneName . '
+
+';
+        $text .= 'Введите плановые трудозатраты в <b>днях</b> (целое число):';
+        
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+            ]
+        ];
+        
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+    
+    /**
+     * Handle PNR milestone hours input
+     */
+    public function handlePNRMilestoneHoursInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            $milestoneIndex = $conversation->notes['milestone_index'] ?? null;
+            $milestoneName = $conversation->notes['milestone_name'] ?? null;
+            
+            if (!$projectCode || $milestoneIndex === null || !$milestoneName) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: данные не найдены');
+            }
+            
+            $hours = trim($text);
+            
+            // Validate input - must be positive integer
+            if (!is_numeric($hours) || intval($hours) != $hours || intval($hours) < 0) {
+                $errorText = '❌ Неверный формат
+
+Введите целое положительное число (дни):';
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+            
+            $plannedHours = intval($hours);
+            
+            // Check if milestone already exists
+            $stmt = $conn->prepare("
+                SELECT id FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $existing = $result->fetch_assoc();
+            
+            if ($existing) {
+                // Update existing
+                $stmt = $conn->prepare("
+                    UPDATE project_milestones
+                    SET planned_hours = ?, is_not_applicable = 0, unit = 'days'
+                    WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+                ");
+                $stmt->bind_param('iss', $plannedHours, $projectCode, $milestoneName);
+            } else {
+                // Insert new
+                $stmt = $conn->prepare("
+                    INSERT INTO project_milestones (project_code, work_type, milestone_name, planned_hours, is_not_applicable, unit, order_index)
+                    VALUES (?, 'ПНР', ?, ?, 0, 'days', ?)
+                ");
+                $stmt->bind_param('ssii', $projectCode, $milestoneName, $plannedHours, $milestoneIndex);
+            }
+            $stmt->execute();
+            
+            // Clear conversation
+            $conversation->stop();
+            
+            $successText = '✅ <b>Трудозатраты установлены</b>
+
+';
+            $successText .= '<b>Веха:</b> ' . $milestoneName . '
+';
+            $successText .= '<b>Плановые трудозатраты:</b> ' . $plannedHours . ' дн.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handlePNRMilestoneHoursInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Set PNR milestone as not applicable
+     */
+    private function setPNRMilestoneNotApplicable(string $chatId, int $userId, string $projectCode, int $milestoneIndex): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            if (!isset($milestoneNames[$milestoneIndex])) {
+                return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+            }
+            
+            $milestoneName = $milestoneNames[$milestoneIndex];
+            
+            // Check if milestone already exists
+            $stmt = $conn->prepare("
+                SELECT id FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $existing = $result->fetch_assoc();
+            
+            if ($existing) {
+                // Update existing
+                $stmt = $conn->prepare("
+                    UPDATE project_milestones
+                    SET planned_hours = NULL, is_not_applicable = 1
+                    WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+                ");
+                $stmt->bind_param('ss', $projectCode, $milestoneName);
+            } else {
+                // Insert new
+                $stmt = $conn->prepare("
+                    INSERT INTO project_milestones (project_code, work_type, milestone_name, planned_hours, is_not_applicable, order_index)
+                    VALUES (?, 'ПНР', ?, NULL, 1, ?)
+                ");
+                $stmt->bind_param('ssi', $projectCode, $milestoneName, $milestoneIndex);
+            }
+            $stmt->execute();
+            
+            $text = '✅ <b>Статус установлен</b>
+
+';
+            $text .= '<b>Веха:</b> ' . $milestoneName . '
+';
+            $text .= '📌 <b>Статус:</b> Не предусмотрено проектом';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::setPNRMilestoneNotApplicable error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Clear PNR milestone data
+     */
+    private function clearPNRMilestone(string $chatId, int $userId, string $projectCode, int $milestoneIndex): ServerResponse
+    {
+        try {
+            $conn = $this->databaseService->getConnection();
+            $milestoneNames = $this->getPNRMilestoneNames();
+            
+            if (!isset($milestoneNames[$milestoneIndex])) {
+                return $this->messageService->sendMessage($chatId, '❌ Веха не найдена');
+            }
+            
+            $milestoneName = $milestoneNames[$milestoneIndex];
+            
+            // Delete milestone
+            $stmt = $conn->prepare("
+                DELETE FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = ?
+            ");
+            $stmt->bind_param('ss', $projectCode, $milestoneName);
+            $stmt->execute();
+            
+            $text = '✅ <b>Данные очищены</b>
+
+';
+            $text .= '<b>Веха:</b> ' . $milestoneName . '
+
+';
+            $text .= 'Трудозатраты и статус удалены.';
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К списку вех', 'callback_data' => 'proj_pnr_back_' . $projectCode]
+                ],
+                [
+                    ['text' => '🗂️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+            
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::clearPNRMilestone error: " . $e->getMessage());
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
