@@ -89,16 +89,16 @@ class PersonnelHandler implements CallbackHandlerInterface
             return $this->showFreetimeEmployees($chatId, $fn);
         }
 
-        // Status lists - Отпуск (stub)
+        // Status lists - Отпуск
         if (preg_match('/^personnel_status_(mobile|shmr|pnr)_vacation$/', $category, $matches)) {
             $fn = $matches[1];
-            return $this->showVacationStub($chatId, $fn);
+            return $this->showVacationEmployees($chatId, $fn);
         }
 
-        // Status lists - Больничный (stub)
+        // Status lists - Больничный
         if (preg_match('/^personnel_status_(mobile|shmr|pnr)_sick$/', $category, $matches)) {
             $fn = $matches[1];
-            return $this->showSickLeaveStub($chatId, $fn);
+            return $this->showSickLeaveEmployees($chatId, $fn);
         }
 
         error_log("PersonnelHandler unknown category: '{$category}'");
@@ -211,8 +211,26 @@ class PersonnelHandler implements CallbackHandlerInterface
                 error_log("PersonnelHandler::showStatusMenu - Stack trace: " . $e->getTraceAsString());
             }
             
-            $vacationCount = 0;  // TODO: implement
-            $sickCount = 0;      // TODO: implement
+            $vacationCount = 0;
+            $sickCount = 0;
+            
+            try {
+                error_log("PersonnelHandler::showStatusMenu - Calling getAbsenceEmployees for vacation");
+                $vacationEmployees = $this->personnelService->getAbsenceEmployees($dbFn, 'Отпуск');
+                $vacationCount = count($vacationEmployees);
+                error_log("PersonnelHandler::showStatusMenu - Vacation count: {$vacationCount}");
+            } catch (\Exception $e) {
+                error_log("PersonnelHandler::showStatusMenu - ERROR getting vacation employees: " . $e->getMessage());
+            }
+            
+            try {
+                error_log("PersonnelHandler::showStatusMenu - Calling getAbsenceEmployees for sick leave");
+                $sickEmployees = $this->personnelService->getAbsenceEmployees($dbFn, 'Больничный');
+                $sickCount = count($sickEmployees);
+                error_log("PersonnelHandler::showStatusMenu - Sick count: {$sickCount}");
+            } catch (\Exception $e) {
+                error_log("PersonnelHandler::showStatusMenu - ERROR getting sick employees: " . $e->getMessage());
+            }
             
             error_log("PersonnelHandler::showStatusMenu - Building keyboard with counts - onsite: {$onsiteCount}, freetime: {$freetimeCount}");
             
@@ -330,39 +348,63 @@ class PersonnelHandler implements CallbackHandlerInterface
     }
 
     /**
-     * Show vacation stub
+     * Show employees on vacation
      */
-    private function showVacationStub(string $chatId, string $fn): ServerResponse
+    private function showVacationEmployees(string $chatId, string $fn): ServerResponse
     {
+        $dbFn = $this->mapFnToDatabase($fn);
         $fnName = $this->getFnDisplayName($fn);
+        $employees = $this->personnelService->getAbsenceEmployees($dbFn, 'Отпуск');
 
         $keyboard = [
-            [
-                ['text' => '⬅️ Назад', 'callback_data' => "personnel_fn_{$fn}"]
-            ]
+            [['text' => '⬅️ Назад', 'callback_data' => "personnel_fn_{$fn}"]]
         ];
 
-        $message = "🌴 <b>Отпуск</b>\n{$fnName}\n\n⚠️ <b>Функционал в разработке</b>\n\n" .
-                   "В следующих версиях здесь будет отображаться список сотрудников, находящихся в отпуске.";
+        if (empty($employees)) {
+            $message = "🌴 <b>Отпуск</b>\n{$fnName}\n\nНа данный момент нет сотрудников в отпуске.";
+            return $this->messageService->sendMessage($chatId, $message, $keyboard);
+        }
+
+        $message = "🌴 <b>Сотрудники в отпуске</b>\n{$fnName}\n\n";
+
+        foreach ($employees as $emp) {
+            $daysWord = $this->personnelService->getDaysWord($emp['days']);
+            $message .= "🏖 {$emp['fio']}\n";
+            $message .= "   📅 с {$emp['start_date']} по {$emp['end_date']} ({$emp['days']} {$daysWord})\n\n";
+        }
+
+        $message .= "Всего: " . count($employees);
 
         return $this->messageService->sendMessage($chatId, $message, $keyboard);
     }
 
     /**
-     * Show sick leave stub
+     * Show employees on sick leave
      */
-    private function showSickLeaveStub(string $chatId, string $fn): ServerResponse
+    private function showSickLeaveEmployees(string $chatId, string $fn): ServerResponse
     {
+        $dbFn = $this->mapFnToDatabase($fn);
         $fnName = $this->getFnDisplayName($fn);
+        $employees = $this->personnelService->getAbsenceEmployees($dbFn, 'Больничный');
 
         $keyboard = [
-            [
-                ['text' => '⬅️ Назад', 'callback_data' => "personnel_fn_{$fn}"]
-            ]
+            [['text' => '⬅️ Назад', 'callback_data' => "personnel_fn_{$fn}"]]
         ];
 
-        $message = "🏥 <b>Больничный</b>\n{$fnName}\n\n⚠️ <b>Функционал в разработке</b>\n\n" .
-                   "В следующих версиях здесь будет отображаться список сотрудников, находящихся на больничном.";
+        if (empty($employees)) {
+            $message = "🏥 <b>Больничный</b>\n{$fnName}\n\nНа данный момент нет сотрудников на больничном.";
+            return $this->messageService->sendMessage($chatId, $message, $keyboard);
+        }
+
+        $message = "🏥 <b>Сотрудники на больничном</b>\n{$fnName}\n\n";
+
+        foreach ($employees as $emp) {
+            $daysWord = $this->personnelService->getDaysWord($emp['days']);
+            $message .= "🏥 {$emp['fio']}\n";
+            $message .= "   📅 с {$emp['start_date']} по {$emp['end_date']} ({$emp['days']} {$daysWord})\n\n";
+        }
+
+        $message .= "Всего: " . count($employees);
 
         return $this->messageService->sendMessage($chatId, $message, $keyboard);
     }

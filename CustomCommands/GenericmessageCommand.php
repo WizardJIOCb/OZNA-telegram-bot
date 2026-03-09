@@ -23,6 +23,8 @@ require_once __DIR__ . '/Services/ManualInputStateManager.php';
 require_once __DIR__ . '/Services/NotesService.php';
 require_once __DIR__ . '/Handlers/NotesHandler.php';
 require_once __DIR__ . '/Handlers/ExportKeyHandler.php';
+require_once __DIR__ . '/Services/ClaimService.php';
+require_once __DIR__ . '/Handlers/ClaimHandler.php';
 
 use Longman\TelegramBot\Commands\SystemCommands\Services\AdminService;
 use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
@@ -185,6 +187,41 @@ class GenericmessageCommand extends SystemCommand
             return $this->handlePNRProjectActivityInput($chatId, $userId, $text, $conversation);
         }
         
+        // Check if user is setting SMR milestone hours
+        if ($this->isSettingSMRMilestoneHours($conversation, $userId)) {
+            return $this->handleSMRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting SMR mobilization
+        if ($this->isSettingSMRMobilization($conversation, $userId)) {
+            return $this->handleSMRMobilizationInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting SMR project activity
+        if ($this->isSettingSMRProjectActivity($conversation, $userId)) {
+            return $this->handleSMRProjectActivityInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting SMR master duties
+        if ($this->isSettingSMRMasterDuties($conversation, $userId)) {
+            return $this->handleSMRMasterDutiesInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting CMR milestone hours
+        if ($this->isSettingCMRMilestoneHours($conversation, $userId)) {
+            return $this->handleCMRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting CMR mobilization
+        if ($this->isSettingCMRMobilization($conversation, $userId)) {
+            return $this->handleCMRMobilizationInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is setting CMR project activity
+        if ($this->isSettingCMRProjectActivity($conversation, $userId)) {
+            return $this->handleCMRProjectActivityInput($chatId, $userId, $text, $conversation);
+        }
+        
         // Check if user is in admin project adding state
         if ($this->isAddingProject($conversation, $userId)) {
             return $this->handleAddProject($chatId, $userId, $text, $conversation);
@@ -200,14 +237,40 @@ class GenericmessageCommand extends SystemCommand
             return $this->handleGrokQuestion($chatId, $userId, $text, $conversation);
         }
 
+        // Check if user is awaiting tabel manager date input
+        if ($this->isAwaitingTabelMgrDate($conversation, $userId)) {
+            return $this->handleTabelMgrDateInput($chatId, $userId, $text, $conversation);
+        }
+
         // Check if user is in project moderation state (adding/renaming/rejecting)
         if ($this->isInProjectModerationState($conversation, $userId)) {
             return $this->handleProjectModerationInput($chatId, $userId, $text, $conversation);
         }
 
+        // Check if user is in claim input state (creating claim or rejecting)
+        if ($this->isInClaimInputState($conversation)) {
+            return $this->handleClaimInput($chatId, $userId, $text, $conversation);
+        }
+
         // Check if user is awaiting FIO input
         if ($this->isAwaitingFioInput($conversation, $userId)) {
             return $this->handleFioInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is awaiting web password input (PWA)
+        if (isset($conversation->notes['awaiting_web_password_input']) && $conversation->notes['awaiting_web_password_input']) {
+            $conversation->notes['awaiting_web_password_input'] = false;
+            $conversation->update();
+            $profileHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProfileHandler($this->messageService);
+            return $profileHandler->handleWebPasswordUpdate($text, $userId, $chatId);
+        }
+        
+        // Check if user is awaiting web login input (PWA)
+        if (isset($conversation->notes['awaiting_web_login_input']) && $conversation->notes['awaiting_web_login_input']) {
+            $conversation->notes['awaiting_web_login_input'] = false;
+            $conversation->update();
+            $profileHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProfileHandler($this->messageService);
+            return $profileHandler->handleWebLoginUpdate($text, $userId, $chatId);
         }
         
         // Check if user is awaiting export key input
@@ -269,6 +332,11 @@ class GenericmessageCommand extends SystemCommand
             }
         }
         
+        // Check if user is awaiting milestone progress input
+        if ($this->isAwaitingMilestoneProgress($conversation, $userId)) {
+            return $this->handleMilestoneProgressInput($chatId, $userId, $text, $conversation);
+        }
+        
         // Check if user is awaiting custom input for "Прочее" activity (NEW implementation)
         if ($this->isAwaitingNewProcheeInput($conversation, $userId)) {
             return $this->handleNewProcheeInput($chatId, $userId, $text, $conversation);
@@ -282,6 +350,16 @@ class GenericmessageCommand extends SystemCommand
         // Check if user is awaiting date input
         if ($this->isAwaitingDateInput($conversation, $userId)) {
             return $this->handleDateInput($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is awaiting absence start date input
+        if ($this->isAwaitingAbsenceStartDate($conversation, $userId)) {
+            return $this->handleAbsenceStartDateInputDelegated($chatId, $userId, $text, $conversation);
+        }
+        
+        // Check if user is awaiting absence end date input
+        if ($this->isAwaitingAbsenceEndDate($conversation, $userId)) {
+            return $this->handleAbsenceEndDateInputDelegated($chatId, $userId, $text, $conversation);
         }
         
         // Check if user is awaiting simple report date input
@@ -404,6 +482,40 @@ class GenericmessageCommand extends SystemCommand
     {
         $awaitingExportKey = $conversation->notes['awaiting_export_key'] ?? false;
         return $awaitingExportKey;
+    }
+    
+    /**
+     * Check if user is awaiting milestone progress input
+     */
+    private function isAwaitingMilestoneProgress(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_milestone_progress';
+    }
+    
+    /**
+     * Handle milestone progress percentage input
+     */
+    private function handleMilestoneProgressInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        error_log("GenericmessageCommand: Handling milestone progress input: '{$text}'");
+        
+        // Create TabelHandler to delegate the input handling
+        $tabelHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\TabelHandler(
+            $this->databaseService,
+            $this->messageService,
+            new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector(),
+            new \Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry(
+                $this->databaseService,
+                $this->messageService
+            ),
+            $this->adminService
+        );
+        
+        // Create a fake Message object with the user's input
+        $message = $this->getMessage();
+        
+        return $tabelHandler->handleMilestoneProgressInput($message, $conversation);
     }
     
     /**
@@ -748,6 +860,70 @@ User ID должен быть числом.',
         error_log("GenericmessageCommand: User {$userId} awaiting date input: " . ($awaitingDateInput ? "true" : "false"));
         
         return $awaitingDateInput;
+    }
+
+    /**
+     * Check if user is awaiting absence start date input
+     */
+    private function isAwaitingAbsenceStartDate(Conversation $conversation, int $userId): bool
+    {
+        return $conversation->notes['awaiting_absence_start_date'] ?? false;
+    }
+
+    /**
+     * Check if user is awaiting absence end date input
+     */
+    private function isAwaitingAbsenceEndDate(Conversation $conversation, int $userId): bool
+    {
+        return $conversation->notes['awaiting_absence_end_date'] ?? false;
+    }
+
+    /**
+     * Delegate absence start date input to TabelHandler
+     */
+    private function handleAbsenceStartDateInputDelegated(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        error_log("GenericmessageCommand: Delegating absence start date input to TabelHandler for user {$userId}");
+
+        require_once __DIR__ . '/Services/ProjectSelector.php';
+        require_once __DIR__ . '/Services/TabelEntry.php';
+        require_once __DIR__ . '/Handlers/TabelHandler.php';
+
+        $databaseService = new \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService();
+        $messageService = new \Longman\TelegramBot\Commands\SystemCommands\Services\MessageService();
+        $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
+        $tabelEntry = new \Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry($databaseService, $messageService);
+        $adminService = new \Longman\TelegramBot\Commands\SystemCommands\Services\AdminService($messageService);
+
+        $tabelHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\TabelHandler(
+            $databaseService, $messageService, $projectSelector, $tabelEntry, $adminService
+        );
+
+        return $tabelHandler->handleAbsenceStartDateInput($chatId, $text, $conversation, $userId);
+    }
+
+    /**
+     * Delegate absence end date input to TabelHandler
+     */
+    private function handleAbsenceEndDateInputDelegated(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        error_log("GenericmessageCommand: Delegating absence end date input to TabelHandler for user {$userId}");
+
+        require_once __DIR__ . '/Services/ProjectSelector.php';
+        require_once __DIR__ . '/Services/TabelEntry.php';
+        require_once __DIR__ . '/Handlers/TabelHandler.php';
+
+        $databaseService = new \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService();
+        $messageService = new \Longman\TelegramBot\Commands\SystemCommands\Services\MessageService();
+        $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
+        $tabelEntry = new \Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry($databaseService, $messageService);
+        $adminService = new \Longman\TelegramBot\Commands\SystemCommands\Services\AdminService($messageService);
+
+        $tabelHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\TabelHandler(
+            $databaseService, $messageService, $projectSelector, $tabelEntry, $adminService
+        );
+
+        return $tabelHandler->handleAbsenceEndDateInput($chatId, $text, $conversation, $userId);
     }
     
     /**
@@ -1294,6 +1470,74 @@ User ID должен быть числом.',
     }
     
     /**
+     * Check if user is in claim input state (creating or rejecting claim)
+     */
+    private function isInClaimInputState(Conversation $conversation): bool
+    {
+        $action = $conversation->notes['claim_action'] ?? null;
+        return in_array($action, [
+            'enter_reg_number', 'enter_subject', 'enter_act_date',
+            'enter_equipment', 'enter_serial_number', 'enter_act_author',
+            'enter_description', 'enter_reject_reason',
+            'edit_regnum', 'edit_subject', 'edit_actdate',
+            'edit_author', 'edit_equip', 'edit_serial', 'edit_desc',
+            'enter_close_reason',
+            'user_enter_subject', 'user_enter_equipment',
+            'user_enter_serial', 'user_enter_desc',
+        ]);
+    }
+
+    /**
+     * Handle claim text input (wizard steps or reject reason)
+     */
+    private function handleClaimInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        error_log("GenericmessageCommand: Handling claim input, action: " . ($conversation->notes['claim_action'] ?? 'null'));
+        
+        // Проверяем, не нажал ли пользователь кнопку меню
+        $menuCommands = [
+            '📊 Табель', 'Табель',
+            '❓ Помощь', 'Помощь',
+            '👤 Профиль', 'Профиль',
+            '📁 Проекты', 'Проекты',
+            '⚙️ Админка', 'Админка',
+            '🔐 Запросить доступ', 'Запросить доступ',
+            '🛠️ Управление проектом', 'Управление проектом',
+            '📋 Супервайзер', 'Супервайзер'
+        ];
+        
+        if (in_array($text, $menuCommands)) {
+            error_log("GenericmessageCommand: User {$userId} clicked menu button '{$text}' during claim input - clearing state");
+            
+            // Очищаем состояние рекламации
+            $claimKeys = [
+                'claim_action', 'claim_project', 'claim_reg_number', 'claim_subject',
+                'claim_act_date', 'claim_equipment', 'claim_serial_number',
+                'claim_act_author', 'claim_description', 'claim_reject_id',
+                'claim_edit_id', 'claim_close_id',
+            ];
+            foreach ($claimKeys as $key) {
+                $conversation->notes[$key] = null;
+            }
+            $conversation->update();
+            
+            $infoText = "⚠️ <b>Ввод отменён</b>\n\nВы нажали кнопку меню. Ввод данных рекламации прерван.\n\nИспользуйте меню ниже для навигации.";
+            $this->messageService->sendMessage($chatId, $infoText);
+            
+            $textmenu_command = new \Longman\TelegramBot\Commands\SystemCommands\TextmenuCommand($this->telegram, $this->update);
+            return $textmenu_command->execute();
+        }
+        
+        // Делегируем обработку в ClaimHandler
+        $claimHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ClaimHandler(
+            $this->messageService,
+            $this->adminService
+        );
+        
+        return $claimHandler->handleTextInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
      * Check if user is in notes input state
      */
     private function isNotesInputState(Conversation $conversation): bool
@@ -1328,6 +1572,34 @@ User ID должен быть числом.',
     {
         $awaitingGrokQuestion = $conversation->notes['awaiting_grok_question'] ?? false;
         return $awaitingGrokQuestion;
+    }
+
+    /**
+     * Check if user is awaiting tabel manager date input
+     */
+    private function isAwaitingTabelMgrDate(Conversation $conversation, int $userId): bool
+    {
+        $awaiting = $conversation->notes['awaiting_tabel_mgr_date'] ?? false;
+        error_log("GenericmessageCommand: User {$userId} awaiting_tabel_mgr_date: " . ($awaiting ? 'true' : 'false'));
+        return $awaiting;
+    }
+
+    /**
+     * Handle tabel manager date input
+     */
+    private function handleTabelMgrDateInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        error_log("GenericmessageCommand: Handling tabel manager date input for user {$userId}");
+
+        require_once __DIR__ . '/Handlers/TabelManagerHandler.php';
+
+        $tabelManagerHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\TabelManagerHandler(
+            $this->databaseService,
+            $this->messageService,
+            $this->adminService
+        );
+
+        return $tabelManagerHandler->handleDateInput($chatId, $text, $conversation, $userId);
     }
     
     /**
@@ -1485,7 +1757,7 @@ User ID должен быть числом.',
             $this->messageService
         );
         
-        return $projectHandler->handleMessage($chatId, $userId, $text, $conversation);
+        return $projectHandler->handleNomenclatureGroupNameInput($chatId, $userId, $text, $conversation);
     }
     
     /**
@@ -1616,5 +1888,180 @@ User ID должен быть числом.',
         );
         
         return $projectHandler->handlePNRProjectActivityInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting SMR milestone hours
+     */
+    private function isSettingSMRMilestoneHours(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_smr_milestone_hours';
+    }
+    
+    /**
+     * Handle SMR milestone hours input
+     */
+    private function handleSMRMilestoneHoursInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleSMRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting SMR mobilization
+     */
+    private function isSettingSMRMobilization(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_smr_mobilization';
+    }
+    
+    /**
+     * Handle SMR mobilization input
+     */
+    private function handleSMRMobilizationInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleSMRMobilizationInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting SMR project activity
+     */
+    private function isSettingSMRProjectActivity(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_smr_project_activity';
+    }
+    
+    /**
+     * Handle SMR project activity input
+     */
+    private function handleSMRProjectActivityInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleSMRProjectActivityInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting SMR master duties
+     */
+    private function isSettingSMRMasterDuties(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_smr_master_duties';
+    }
+    
+    /**
+     * Handle SMR master duties input
+     */
+    private function handleSMRMasterDutiesInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleSMRMasterDutiesInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting CMR milestone hours
+     */
+    private function isSettingCMRMilestoneHours(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_cmr_milestone_hours';
+    }
+    
+    /**
+     * Handle CMR milestone hours input
+     */
+    private function handleCMRMilestoneHoursInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleCMRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting CMR mobilization
+     */
+    private function isSettingCMRMobilization(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_cmr_mobilization';
+    }
+    
+    /**
+     * Handle CMR mobilization input
+     */
+    private function handleCMRMobilizationInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleCMRMobilizationInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting CMR project activity
+     */
+    private function isSettingCMRProjectActivity(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_cmr_project_activity';
+    }
+    
+    /**
+     * Handle CMR project activity input
+     */
+    private function handleCMRProjectActivityInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        // Load ProjectHandler
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleCMRProjectActivityInput($chatId, $userId, $text, $conversation);
     }
 }

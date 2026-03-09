@@ -1,0 +1,24 @@
+{
+  "name": "Компания ОЗНА",
+  "short_name": "ОЗНА",
+  "description": "Портал Компания ОЗНА",
+  "start_url": "/tg/ozna/app/#/",
+  "display": "standalone",
+  "background_color": "#1565c0",
+  "theme_color": "#1565c0",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/tg/ozna/app/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/tg/ozna/app/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

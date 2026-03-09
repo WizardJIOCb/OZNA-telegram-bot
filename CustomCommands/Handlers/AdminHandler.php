@@ -281,6 +281,11 @@ class AdminHandler implements CallbackHandlerInterface
                 $keyboard[] = [
                     ['text' => '🔐 Управление уровнями доступа', 'callback_data' => 'category_УровеньДоступа_Управление']
                 ];
+                
+                // Управление табелем - только для администраторов и выше
+                $keyboard[] = [
+                    ['text' => '📝 Управление табелем', 'callback_data' => 'category_Админка_Табель']
+                ];
             }
             
             // AI-помощник - ВРЕМЕННО ОТКЛЮЧЕН (Grok API не доступен из России)

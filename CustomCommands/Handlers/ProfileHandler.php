@@ -68,6 +68,11 @@ class ProfileHandler implements CallbackHandlerInterface
             $canHandle = strpos($callbackData, 'export_key_') === 0;
         }
         
+        // Проверяем callback'и, связанные с внешним подключением (PWA)
+        if (!$canHandle) {
+            $canHandle = strpos($callbackData, 'pwa_') === 0;
+        }
+        
         error_log("ProfileHandler: canHandle result for '{$callbackData}': " . ($canHandle ? 'true' : 'false'));
         error_log("ProfileHandler: starts with category_Профиль: " . (strpos($callbackData, 'category_Профиль') === 0 ? 'true' : 'false'));
         return $canHandle;
@@ -128,6 +133,11 @@ class ProfileHandler implements CallbackHandlerInterface
             return $this->handleFunctionalDirectionUpdate($chatId, $userId, 'Шеф-монтаж');
         }
         
+        if ($category === 'Профиль_ФН_Менеджер' || $callbackData === 'category_Профиль_ФН_Менеджер') {
+            error_log("ProfileHandler handling manager selection for user: {$userId}");
+            return $this->handleFunctionalDirectionUpdate($chatId, $userId, 'Менеджер');
+        }
+        
         if ($category === 'Профиль_ФН_Тестировщик' || $callbackData === 'category_Профиль_ФН_Тестировщик') {
             error_log("ProfileHandler handling tester selection for user: {$userId}");
             // Check if user has admin access (level 3+)
@@ -168,6 +178,34 @@ class ProfileHandler implements CallbackHandlerInterface
             return $this->exportKeyHandler->cancelExportKeyResetRequest($chatId, $userId);
         }
         
+        // PWA / Внешнее подключение callbacks
+        if ($callbackData === 'pwa_menu') {
+            return $this->showPwaMenu($chatId, $userId);
+        }
+        if ($callbackData === 'pwa_set_password') {
+            $conversation->notes['awaiting_web_password_input'] = true;
+            $conversation->update();
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>🔑 Установка пароля для веб-доступа</b>' . PHP_EOL . PHP_EOL .
+                'Введите новый пароль (минимум 6 символов):' . PHP_EOL .
+                'Пароль будет использоваться для входа в веб-приложение.'
+            );
+        }
+        if ($callbackData === 'pwa_set_login') {
+            $conversation->notes['awaiting_web_login_input'] = true;
+            $conversation->update();
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>✏️ Изменение логина для веб-доступа</b>' . PHP_EOL . PHP_EOL .
+                'Введите новый логин:' . PHP_EOL .
+                'Логин будет использоваться для входа в веб-приложение.'
+            );
+        }
+        if ($callbackData === 'pwa_reset_password') {
+            return $this->handleResetPassword($chatId, $userId);
+        }
+
         // Обработка основной категории Профиль
         if ($category === 'Профиль' || $callbackData === 'category_Профиль') {
             error_log("ProfileHandler showing profile for user: {$userId}");
@@ -221,6 +259,13 @@ class ProfileHandler implements CallbackHandlerInterface
         if ($accessLevel >= DatabaseService::ACCESS_LEVEL_SUPERVISOR) {
             $keyboard[] = [
                 ['text' => '🔐 Кодовое слово', 'callback_data' => 'export_key_menu']
+            ];
+        }
+        
+        // Кнопка внешнего подключения (PWA) для всех уровней доступа выше гостя
+        if ($accessLevel >= 1) {
+            $keyboard[] = [
+                ['text' => '🌐 Внешнее подключение', 'callback_data' => 'pwa_menu']
             ];
         }
         
@@ -335,6 +380,20 @@ class ProfileHandler implements CallbackHandlerInterface
         $success = \pDB::updateUserFio($userId, trim($text));
         
         if ($success) {
+            // Sync username in pwa_users to match FIO
+            try {
+                $db = $this->databaseService->getConnection();
+                $newFio = trim($text);
+                $stmt = $db->prepare("UPDATE pwa_users SET username = ?, fio = ? WHERE linked_telegram_id = ?");
+                if ($stmt) {
+                    $stmt->bind_param('ssi', $newFio, $newFio, $userId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+            } catch (\Throwable $e) {
+                // Non-critical, don't block FIO update
+            }
+
             $responseText = "<b>✅ ФИО обновлено:</b> " . trim($text) . PHP_EOL . PHP_EOL .
                 '📝 Используйте кнопку "👤 Просмотр профиля" для проверки изменений';
                 
@@ -365,6 +424,9 @@ class ProfileHandler implements CallbackHandlerInterface
             ],
             [
                 ['text' => '🔧 Шеф-монтаж', 'callback_data' => 'category_Профиль_ФН_ШефМонтаж']
+            ],
+            [
+                ['text' => '📊 Менеджер', 'callback_data' => 'category_Профиль_ФН_Менеджер']
             ]
         ];
         
@@ -378,7 +440,8 @@ class ProfileHandler implements CallbackHandlerInterface
         $text = '<b>🎯 Выберите новое функциональное направление:</b>' . PHP_EOL . PHP_EOL .
             '• Мобильная бригада' . PHP_EOL .
             '• Пусконаладка' . PHP_EOL .
-            '• Шеф-монтаж';
+            '• Шеф-монтаж' . PHP_EOL .
+            '• Менеджер';
             
         // Add Тестировщик in text for admins
         if ($userAccessLevel >= \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService::ACCESS_LEVEL_ADMIN) {
@@ -411,6 +474,275 @@ class ProfileHandler implements CallbackHandlerInterface
             
             return $this->messageService->sendMessage($chatId, $text);
         }
+    }
+
+    /**
+     * Show PWA / Внешнее подключение menu
+     */
+    private function showPwaMenu(string $chatId, int $userId): ServerResponse
+    {
+        $userData = $this->databaseService->getUserData($userId);
+        $fio = $userData['fio'] ?? 'Без ФИО';
+
+        // Check if user has a PWA account (table may not exist yet)
+        $pwaUser = null;
+        try {
+            $db = $this->databaseService->getConnection();
+            $stmt = $db->prepare("SELECT id, username FROM pwa_users WHERE linked_telegram_id = ?");
+            if ($stmt) {
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $pwaUser = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+            }
+        } catch (\Throwable $e) {
+            error_log("ProfileHandler::showPwaMenu: pwa_users query failed: " . $e->getMessage());
+        }
+
+        if ($pwaUser) {
+            $text = '<b>🌐 Внешнее подключение</b>' . PHP_EOL . PHP_EOL .
+                '<b>Статус:</b> ✅ Настроено' . PHP_EOL .
+                '<b>Логин:</b> <code>' . htmlspecialchars($pwaUser['username']) . '</code>' . PHP_EOL .
+                '<b>Пароль:</b> установлен' . PHP_EOL . PHP_EOL .
+                'Используйте эти данные для входа в веб-приложение.';
+        } else {
+            $text = '<b>🌐 Внешнее подключение</b>' . PHP_EOL . PHP_EOL .
+                '<b>Статус:</b> ⚠️ Не настроено' . PHP_EOL .
+                '<b>Логин будет:</b> <code>' . htmlspecialchars($fio) . '</code>' . PHP_EOL . PHP_EOL .
+                'Установите пароль для активации веб-доступа.';
+        }
+
+        $keyboard = [];
+
+        if ($pwaUser) {
+            $keyboard[] = [
+                ['text' => '🔑 Изменить пароль', 'callback_data' => 'pwa_set_password']
+            ];
+            $keyboard[] = [
+                ['text' => '🔄 Сбросить пароль (показать новый)', 'callback_data' => 'pwa_reset_password']
+            ];
+        } else {
+            $keyboard[] = [
+                ['text' => '🔑 Установить пароль', 'callback_data' => 'pwa_set_password']
+            ];
+        }
+
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => 'category_Профиль']
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle web password input from user text message
+     */
+    public function handleWebPasswordUpdate(string $password, int $userId, string $chatId): ServerResponse
+    {
+        if (mb_strlen($password) < 6) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>❌ Пароль слишком короткий!</b>' . PHP_EOL .
+                'Минимум 6 символов. Попробуйте ещё раз:'
+            );
+        }
+
+        $userData = $this->databaseService->getUserData($userId);
+        $fio = $userData['fio'] ?? '';
+        $fn  = $userData['functional_direction'] ?? 'Не указано';
+        $accessLevel = (int) ($userData['access_level'] ?? 0);
+
+        if (trim($fio) === '') {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>❌ Сначала установите ФИО в профиле!</b>' . PHP_EOL .
+                'Перейдите в "📝 Изменить ФИО" и укажите ваше имя.'
+            );
+        }
+
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+        $db = $this->databaseService->getConnection();
+
+        // Ensure pwa_users table exists
+        $db->query("
+            CREATE TABLE IF NOT EXISTS pwa_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                linked_telegram_id BIGINT NULL UNIQUE,
+                access_level TINYINT DEFAULT 0,
+                fio VARCHAR(255),
+                functional_direction VARCHAR(100),
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_telegram_id (linked_telegram_id),
+                INDEX idx_username (username)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+
+        // Check if pwa_users record exists
+        $stmt = $db->prepare("SELECT id, username FROM pwa_users WHERE linked_telegram_id = ?");
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $existing = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if ($existing) {
+            // Update password
+            $stmt2 = $db->prepare("UPDATE pwa_users SET password_hash = ?, fio = ?, functional_direction = ?, access_level = ? WHERE id = ?");
+            $stmt2->bind_param('sssii', $hash, $fio, $fn, $accessLevel, $existing['id']);
+            $stmt2->execute();
+            $stmt2->close();
+            $username = $existing['username'];
+        } else {
+            // Create new record (login = FIO)
+            $username = $fio;
+
+            // Check for duplicate usernames and append suffix if needed
+            $checkStmt = $db->prepare("SELECT COUNT(*) as cnt FROM pwa_users WHERE LOWER(username) = LOWER(?)");
+            $checkStmt->bind_param('s', $username);
+            $checkStmt->execute();
+            $cnt = $checkStmt->get_result()->fetch_assoc()['cnt'];
+            $checkStmt->close();
+            if ($cnt > 0) {
+                $username = $fio . '_' . $userId;
+            }
+
+            $isActive = 1;
+            $stmt2 = $db->prepare(
+                "INSERT INTO pwa_users (username, password_hash, linked_telegram_id, access_level, fio, functional_direction, is_active)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            );
+            $stmt2->bind_param('ssisssi', $username, $hash, $userId, $accessLevel, $fio, $fn, $isActive);
+            $stmt2->execute();
+            $stmt2->close();
+        }
+
+        $text = '<b>✅ Пароль для веб-доступа установлен!</b>' . PHP_EOL . PHP_EOL .
+            '<b>Логин:</b> <code>' . htmlspecialchars($username) . '</code>' . PHP_EOL .
+            '<b>Пароль:</b> <code>' . htmlspecialchars($password) . '</code>' . PHP_EOL . PHP_EOL .
+            '⚠️ Запомните или запишите данные! Пароль показывается только один раз.' . PHP_EOL .
+            '🌐 Теперь вы можете войти в веб-приложение.';
+
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад к профилю', 'callback_data' => 'category_Профиль']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle login (username) change from text input
+     */
+    public function handleWebLoginUpdate(string $newLogin, int $userId, string $chatId): ServerResponse
+    {
+        $newLogin = trim($newLogin);
+
+        if (mb_strlen($newLogin) < 2) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>❌ Логин слишком короткий!</b>' . PHP_EOL .
+                'Минимум 2 символа. Попробуйте ещё раз:'
+            );
+        }
+
+        $db = $this->databaseService->getConnection();
+
+        // Check uniqueness
+        $checkStmt = $db->prepare("SELECT id FROM pwa_users WHERE LOWER(username) = LOWER(?) AND linked_telegram_id != ?");
+        $checkStmt->bind_param('si', $newLogin, $userId);
+        $checkStmt->execute();
+        $dup = $checkStmt->get_result()->fetch_assoc();
+        $checkStmt->close();
+
+        if ($dup) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>❌ Такой логин уже занят!</b>' . PHP_EOL .
+                'Попробуйте другой:'
+            );
+        }
+
+        $stmt = $db->prepare("UPDATE pwa_users SET username = ? WHERE linked_telegram_id = ?");
+        $stmt->bind_param('si', $newLogin, $userId);
+        $stmt->execute();
+        $stmt->close();
+
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'pwa_menu']
+            ]
+        ];
+
+        return $this->messageService->sendMessage(
+            $chatId,
+            '<b>✅ Логин изменён!</b>' . PHP_EOL . PHP_EOL .
+            '<b>Новый логин:</b> <code>' . htmlspecialchars($newLogin) . '</code>',
+            $keyboard
+        );
+    }
+
+    /**
+     * Reset password: generate a new random one and show it to the user
+     */
+    private function handleResetPassword(string $chatId, int $userId): ServerResponse
+    {
+        $db = $this->databaseService->getConnection();
+
+        // Generate strong random password
+        $upper  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $lower  = 'abcdefghjkmnpqrstuvwxyz';
+        $digits = '23456789';
+        $all    = $upper . $lower . $digits;
+        $pwd  = $upper[random_int(0, strlen($upper) - 1)];
+        $pwd .= $lower[random_int(0, strlen($lower) - 1)];
+        $pwd .= $digits[random_int(0, strlen($digits) - 1)];
+        for ($i = 3; $i < 10; $i++) {
+            $pwd .= $all[random_int(0, strlen($all) - 1)];
+        }
+        $pwd = str_shuffle($pwd);
+
+        $hash = password_hash($pwd, PASSWORD_BCRYPT, ['cost' => 12]);
+
+        $stmt = $db->prepare("UPDATE pwa_users SET password_hash = ? WHERE linked_telegram_id = ?");
+        $stmt->bind_param('si', $hash, $userId);
+        $stmt->execute();
+        $affected = $stmt->affected_rows;
+        $stmt->close();
+
+        if ($affected === 0) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>❌ Аккаунт не найден.</b>' . PHP_EOL .
+                'Сначала установите пароль через кнопку "Установить пароль".'
+            );
+        }
+
+        // Get username for display
+        $stmt2 = $db->prepare("SELECT username FROM pwa_users WHERE linked_telegram_id = ?");
+        $stmt2->bind_param('i', $userId);
+        $stmt2->execute();
+        $row = $stmt2->get_result()->fetch_assoc();
+        $stmt2->close();
+        $username = $row['username'] ?? '?';
+
+        $keyboard = [
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => 'pwa_menu']
+            ]
+        ];
+
+        return $this->messageService->sendMessage(
+            $chatId,
+            '<b>🔄 Пароль сброшен!</b>' . PHP_EOL . PHP_EOL .
+            '<b>Логин:</b> <code>' . htmlspecialchars($username) . '</code>' . PHP_EOL .
+            '<b>Новый пароль:</b> <code>' . $pwd . '</code>' . PHP_EOL . PHP_EOL .
+            '⚠️ Запомните или запишите пароль! Он показывается только один раз.',
+            $keyboard
+        );
     }
 
     /**

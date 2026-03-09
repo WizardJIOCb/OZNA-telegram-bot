@@ -8,6 +8,8 @@ use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
 use Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector;
 use Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry;
 use Longman\TelegramBot\Commands\SystemCommands\Services\AdminService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\MilestoneProgressService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\ClaimService;
 use Longman\TelegramBot\Entities\CallbackQuery;
 use Longman\TelegramBot\Entities\Message;
 use Longman\TelegramBot\Entities\ServerResponse;
@@ -24,6 +26,8 @@ class TabelHandler implements CallbackHandlerInterface
     private ProjectSelector $projectSelector;
     private TabelEntry $tabelEntry;
     private AdminService $adminService;
+    private ?MilestoneProgressService $milestoneProgressService = null;
+    private ?ClaimService $claimService = null;
     
     // Define activity types for validation
     private array $activityTypes = [
@@ -87,6 +91,8 @@ class TabelHandler implements CallbackHandlerInterface
         'Метрология',
         // Project activity types
         'УчастиеВЗПИ',
+        // ZPI sub-activities (Подактивности ЗПИ)
+        'ЗПИ_ПровШк', 'ЗПИ_НастОб', 'ЗПИ_ФункПров', 'ЗПИ_КонтрПр', 'ЗПИ_КомисПр',
         'РазрПрограммы',
         'РазрГрафика',
         'ОргДопоставки',
@@ -199,6 +205,43 @@ class TabelHandler implements CallbackHandlerInterface
         $this->projectSelector = $projectSelector;
         $this->tabelEntry = $tabelEntry;
         $this->adminService = $adminService;
+    }
+
+    /**
+     * Get MilestoneProgressService (lazy initialization)
+     */
+    private function getMilestoneProgressService(): MilestoneProgressService
+    {
+        if ($this->milestoneProgressService === null) {
+            $this->milestoneProgressService = new MilestoneProgressService($this->databaseService);
+        }
+        return $this->milestoneProgressService;
+    }
+
+    /**
+     * Get ClaimService (lazy initialization)
+     */
+    private function getClaimService(): ?ClaimService
+    {
+        if ($this->claimService === null) {
+            try {
+                $pdo = new \PDO(
+                    'mysql:host=82.146.42.213;dbname=tg_bot;charset=utf8mb4',
+                    'WizardJIOCb',
+                    '7qQ#28051961',
+                    [
+                        \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+                        \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+                        \PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
+                    ]
+                );
+                $this->claimService = new ClaimService($pdo);
+            } catch (\Exception $e) {
+                error_log("TabelHandler::getClaimService error: " . $e->getMessage());
+                return null;
+            }
+        }
+        return $this->claimService;
     }
 
     public function canHandle(string $callbackData): bool
@@ -314,7 +357,55 @@ class TabelHandler implements CallbackHandlerInterface
             return $this->handleMobileBrigadeMenu($chatId, $conversation, $messageId);
         }
         
-        $actualCategory = $this->extractCategoryFromCallback($callbackData);
+        // МобБриг warranty submenu interception — show submenu instead of tabel entry
+        $mbWarrantyTradeMap = [
+            'cat_МобБриг_Электр_РабГар' => 'cat_МобБриг_Электр',
+            'cat_МобБриг_Слес_РабГар'   => 'cat_МобБриг_Слес',
+            'cat_МобБриг_Свар_РабГар'   => 'cat_МобБриг_Свар',
+            'cat_МобБриг_Тепло_РабГар'  => 'cat_МобБриг_Тепло',
+            'cat_МобБриг_Маляр_РабГар'  => 'cat_МобБриг_Маляр',
+        ];
+        if (isset($mbWarrantyTradeMap[$callbackData])) {
+            error_log("TabelHandler: МобБриг warranty submenu intercepted for: {$callbackData}");
+            $backCallback = $mbWarrantyTradeMap[$callbackData];
+            
+            // Fetch project claims for МобБриг warranty submenu
+            $mbClaims = [];
+            $mbTotalCount = 0;
+            $mbProjectCode = $conversation ? ($conversation->notes['project_code'] ?? null) : null;
+            
+            if ($mbProjectCode && $mbProjectCode !== 'Unknown') {
+                $claimSvc = $this->getClaimService();
+                if ($claimSvc !== null) {
+                    $mbClaims = $claimSvc->getActiveAndPendingClaimsByProject($mbProjectCode, 5);
+                    $mbTotalCount = $claimSvc->getActiveAndPendingClaimsCountByProject($mbProjectCode);
+                    error_log("TabelHandler: МобБриг warranty found {$mbTotalCount} claims for project {$mbProjectCode}");
+                }
+            }
+            
+            // Store warranty return context
+            if ($conversation) {
+                $conversation->notes['claim_return_warranty'] = true;
+                $conversation->notes['claim_warranty_back_cb'] = $callbackData;
+                $conversation->update();
+            }
+            
+            $keyboard = $this->messageService->createMobileBrigadeWarrantySubmenuKeyboard($backCallback, $mbClaims);
+            
+            $mbText = "<b>🛡️ Работы по гарантии</b>\n\nВыберите рекламацию в рамках текущей активности:";
+            if ($mbTotalCount > 0) {
+                $mbShown = count($mbClaims);
+                if ($mbTotalCount > $mbShown) {
+                    $mbText .= "\n\n📋 Рекламации проекта (показано {$mbShown} из {$mbTotalCount}):";
+                } else {
+                    $mbText .= "\n\n📋 Рекламации проекта ({$mbTotalCount}):";
+                }
+            }
+            
+            return $this->messageService->sendOrEditMessage($chatId, $mbText, $keyboard, $messageId, 'HTML', true);
+        }
+        
+        $actualCategory = $this->extractCategoryFromCallback($callbackData);;
         error_log("TabelHandler: extracted actual category: '{$actualCategory}'");
         
         // CRITICAL: Перехват ШМР "Прочее" callback'ов ДО любых других проверок
@@ -425,11 +516,17 @@ class TabelHandler implements CallbackHandlerInterface
             return $this->messageService->sendMessage($chatId, $text);
         }
 
+        // Supervisors cannot submit tabel entries - block ALL confirmation callbacks
+        if (str_contains($category, '_yes') && $userAccessLevel === DatabaseService::ACCESS_LEVEL_SUPERVISOR && $category !== 'Табель_Отсутствие_yes') {
+            $text = '⚠️ Супервайзеры не могут формировать и направлять отчет в табель.';
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+
         // Check for duplicate entry attempts first
         // Only apply this restriction to non-admin users (levels 1-2)
         // Users with admin level 3+ and super admins (level 4) can bypass this restriction
         // Level 1 users (Пользователь) can also bypass this restriction when explicitly confirming
-        if ($this->isConfirmationCallback($category) && $userAccessLevel < 3 && $userAccessLevel != 1) {
+        if ($this->isConfirmationCallback($category) && $userAccessLevel < 3 && $userAccessLevel != 1 && $category !== 'Табель_Отсутствие_yes') {
             $isSuperAdmin = $this->adminService->isSuperAdmin($userId);
             $recentEntry = $this->databaseService->hasRecentTabelEntry($userId, $isSuperAdmin);
             if ($recentEntry) {
@@ -951,8 +1048,36 @@ class TabelHandler implements CallbackHandlerInterface
 
         // Main tabel menu
         if ($category === 'Табель') {
+            // Clear any in-progress absence flow state when returning to menu
+            unset($conversation->notes['absence_type']);
+            unset($conversation->notes['awaiting_absence_start_date']);
+            unset($conversation->notes['awaiting_absence_end_date']);
+            unset($conversation->notes['absence_start_date']);
+            unset($conversation->notes['absence_end_date']);
+            unset($conversation->notes['absence_day_count']);
+            // Clear "Другая дата" input state
+            $conversation->notes['awaiting_date_input'] = false;
+            $conversation->update();
             error_log("TabelHandler: routing to handleMainTabel");
             return $this->handleMainTabel($chatId, $messageId);
+        }
+
+        // Absence submenu
+        if ($category === 'Табель_Отсутствие') {
+            error_log("TabelHandler: routing to handleAbsenceMenu");
+            return $this->handleAbsenceMenu($chatId, $messageId);
+        }
+
+        // Absence type selection (Больничный or Отпуск)
+        if ($category === 'Табель_Отсутствие_Больничный' || $category === 'Табель_Отсутствие_Отпуск') {
+            error_log("TabelHandler: routing to handleAbsenceTypeSelection with category: '{$category}'");
+            return $this->handleAbsenceTypeSelection($chatId, $category, $conversation, $messageId);
+        }
+
+        // Absence confirmation
+        if ($category === 'Табель_Отсутствие_yes') {
+            error_log("TabelHandler: routing to handleAbsenceConfirmation");
+            return $this->handleAbsenceConfirmation($callbackQuery, $conversation);
         }
 
         // Date selection flows
@@ -1527,6 +1652,13 @@ class TabelHandler implements CallbackHandlerInterface
                 'cat_ШМР_МонтПлощ_ПодтВех' => 'ШМР_МонтПлощ_ПодтВех',
                 'cat_ШМР_МонтЭлУкр_ПодтВех' => 'ШМР_МонтажЭлементовУкрытия_ПодтВех',
                 'cat_ШМР_СборКровл_ПодтВех' => 'ШМР_СборкаКровли_ПодтВех',
+                // NEW: Level 2 sub-milestone confirmation callbacks (under Внутриблочный монтаж)
+                'cat_ШМР_ТехОб_ПодтВех' => 'ШМР_ТехОб_ПодтВех',
+                'cat_ШМР_ЭлОб_ПодтВех' => 'ШМР_ЭлОб_ПодтВех',
+                'cat_ШМР_ПожСигн_ПодтВех' => 'ШМР_ПожСигн_ПодтВех',
+                'cat_ШМР_ОхрСигн_ПодтВех' => 'ШМР_ОхрСигн_ПодтВех',
+                'cat_ШМР_Автом_ПодтВех' => 'ШМР_Автом_ПодтВех',
+                'cat_ШМР_ОтоплВент_ПодтВех' => 'ШМР_ОтоплВент_ПодтВех',
                 
                 // Supervision works schedule confirmation callbacks - SHORT FORM (matching TabelEntry mappings)
                 'cat_ШМР_ВхКонтр_РабГр' => 'ШМР_ВхКонтр_РабПоГр',
@@ -1738,6 +1870,13 @@ class TabelHandler implements CallbackHandlerInterface
                 'cat_ШМР_ОтоплВент_ПроклКб_НеучВОР_yes' => 'ШМР_ОтоплВент_ПроклКб_НеучВОР_yes',
                 'cat_ШМР_ОтоплВент_ПодклКб_НеучВОР_yes' => 'ШМР_ОтоплВент_ПодклКб_НеучВОР_yes',
                 'cat_ШМР_ОтоплВент_МаркОб_НеучВОР_yes' => 'ШМР_ОтоплВент_МаркОб_НеучВОР_yes',
+                // NEW: Level 2 sub-milestone _yes callbacks (under Внутриблочный монтаж)
+                'cat_ШМР_ТехОб_ПодтВех_yes' => 'ШМР_ТехОб_ПодтВех_yes',
+                'cat_ШМР_ЭлОб_ПодтВех_yes' => 'ШМР_ЭлОб_ПодтВех_yes',
+                'cat_ШМР_ПожСигн_ПодтВех_yes' => 'ШМР_ПожСигн_ПодтВех_yes',
+                'cat_ШМР_ОхрСигн_ПодтВех_yes' => 'ШМР_ОхрСигн_ПодтВех_yes',
+                'cat_ШМР_Автом_ПодтВех_yes' => 'ШМР_Автом_ПодтВех_yes',
+                'cat_ШМР_ОтоплВент_ПодтВех_yes' => 'ШМР_ОтоплВент_ПодтВех_yes',
                 // HVAC - ПодтВех (9 activities)
                 'cat_ШМР_ОтоплВент_МонтОб_ПодтВех_yes' => 'ШМР_ОтоплВент_МонтОб_ПодтВех_yes',
                 'cat_ШМР_ОтоплВент_МонтВозд_ПодтВех_yes' => 'ШМР_ОтоплВент_МонтВозд_ПодтВех_yes',
@@ -1945,12 +2084,203 @@ class TabelHandler implements CallbackHandlerInterface
         $keyboard = $this->messageService->createWorkTypeKeyboard();
         // Add the back to main menu button
         $keyboard[] = [
-            ['text' => '⬅️ Назад в главное меню', 'callback_data' => 'category_Помощь']
+            ['text' => '⬅️ Назад в главное меню', 'callback_data' => 'category_Главное']
         ];
         $text = '<b>Выберите вид работ</b>';
         $text = $this->ensureUtf8Encoding($text);
         // Use delete+send for clean effect (last param = true)
         return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
+    }
+
+    // ==================== ABSENCE (Больничный / Отпуск) ====================
+
+    private function handleAbsenceMenu(string $chatId, ?int $messageId = null): ServerResponse
+    {
+        $keyboard = $this->messageService->createAbsenceTypeKeyboard();
+        $text = '<b>📋 Отсутствие</b>' . "\n\n" . 'Выберите тип:';
+        $text = $this->ensureUtf8Encoding($text);
+        return $this->messageService->sendOrEditMessage($chatId, $text, $keyboard, $messageId, 'HTML', true);
+    }
+
+    private function handleAbsenceTypeSelection(string $chatId, string $category, Conversation $conversation, ?int $messageId = null): ServerResponse
+    {
+        $absenceType = str_contains($category, 'Больничный') ? 'Больничный' : 'Отпуск';
+        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+
+        // Clear any old absence state
+        unset($conversation->notes['absence_start_date']);
+        unset($conversation->notes['absence_end_date']);
+        unset($conversation->notes['absence_day_count']);
+        unset($conversation->notes['awaiting_absence_end_date']);
+
+        $conversation->notes['absence_type'] = $absenceType;
+        $conversation->notes['awaiting_absence_start_date'] = true;
+        $conversation->update();
+
+        error_log("TabelHandler: Absence type selected: '{$absenceType}' for chat: {$chatId}");
+
+        $text = "{$emoji} <b>{$absenceType}</b>\n\nВведите дату начала в формате ДД.ММ.ГГГГ\n\nПример: 01.02.2026";
+        $text = $this->ensureUtf8Encoding($text);
+        $cancelKeyboard = [
+            [['text' => '❌ Отмена', 'callback_data' => 'category_Табель']]
+        ];
+        return $this->messageService->sendOrEditMessage($chatId, $text, $cancelKeyboard, $messageId, 'HTML', true);
+    }
+
+    public function handleAbsenceStartDateInput(string $chatId, string $text, Conversation $conversation, int $userId): ServerResponse
+    {
+        $text = trim($text);
+        error_log("TabelHandler: handleAbsenceStartDateInput for user {$userId} with text: '{$text}'");
+
+        $cancelKeyboard = [
+            [['text' => '❌ Отмена', 'callback_data' => 'category_Табель']]
+        ];
+
+        // Validate date format
+        if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $text)) {
+            $msg = "❌ Неверный формат даты.\n\nИспользуйте формат ДД.ММ.ГГГГ\nПример: 01.02.2026";
+            return $this->messageService->sendMessage($chatId, $msg, $cancelKeyboard);
+        }
+
+        $dateParts = explode('.', $text);
+        if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+            $msg = "❌ Некорректная дата.\n\nПроверьте правильность введённой даты.";
+            return $this->messageService->sendMessage($chatId, $msg, $cancelKeyboard);
+        }
+
+        $absenceType = $conversation->notes['absence_type'] ?? 'Больничный';
+        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+
+        $conversation->notes['absence_start_date'] = $text;
+        $conversation->notes['awaiting_absence_start_date'] = false;
+        $conversation->notes['awaiting_absence_end_date'] = true;
+        $conversation->update();
+
+        $msg = "{$emoji} <b>{$absenceType}</b>\n\nДата начала: <b>{$text}</b>\n\nВведите дату окончания в формате ДД.ММ.ГГГГ\n\nПример: 10.02.2026";
+        return $this->messageService->sendMessage($chatId, $msg, $cancelKeyboard);
+    }
+
+    public function handleAbsenceEndDateInput(string $chatId, string $text, Conversation $conversation, int $userId): ServerResponse
+    {
+        $text = trim($text);
+        error_log("TabelHandler: handleAbsenceEndDateInput for user {$userId} with text: '{$text}'");
+
+        $cancelKeyboard = [
+            [['text' => '❌ Отмена', 'callback_data' => 'category_Табель']]
+        ];
+
+        // Validate date format
+        if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $text)) {
+            $msg = "❌ Неверный формат даты.\n\nИспользуйте формат ДД.ММ.ГГГГ\nПример: 10.02.2026";
+            return $this->messageService->sendMessage($chatId, $msg, $cancelKeyboard);
+        }
+
+        $dateParts = explode('.', $text);
+        if (!checkdate((int)$dateParts[1], (int)$dateParts[0], (int)$dateParts[2])) {
+            $msg = "❌ Некорректная дата.\n\nПроверьте правильность введённой даты.";
+            return $this->messageService->sendMessage($chatId, $msg, $cancelKeyboard);
+        }
+
+        $startDateStr = $conversation->notes['absence_start_date'] ?? '';
+        $absenceType = $conversation->notes['absence_type'] ?? 'Больничный';
+        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+
+        // Parse dates and validate end >= start
+        $startDate = \DateTime::createFromFormat('d.m.Y', $startDateStr);
+        $endDate = \DateTime::createFromFormat('d.m.Y', $text);
+
+        if (!$startDate || !$endDate) {
+            $msg = "❌ Ошибка обработки дат. Попробуйте начать заново из меню Табель.";
+            return $this->messageService->sendMessage($chatId, $msg);
+        }
+
+        if ($endDate < $startDate) {
+            $msg = "❌ Дата окончания не может быть раньше даты начала ({$startDateStr}).\n\nВведите дату окончания заново:";
+            return $this->messageService->sendMessage($chatId, $msg);
+        }
+
+        $dayCount = $startDate->diff($endDate)->days + 1;
+
+        $conversation->notes['absence_end_date'] = $text;
+        $conversation->notes['absence_day_count'] = $dayCount;
+        $conversation->notes['awaiting_absence_end_date'] = false;
+        $conversation->update();
+
+        // Build confirmation message
+        $confirmText = "{$emoji} <b>{$absenceType}</b>\n";
+        $confirmText .= "с <b>{$startDateStr}</b> по <b>{$text}</b> ({$dayCount} дн.)\n\n";
+        $confirmText .= "Подтвердить?";
+
+        $keyboard = [
+            [
+                ['text' => '✅ Да', 'callback_data' => 'category_Табель_Отсутствие_yes'],
+                ['text' => '❌ Нет', 'callback_data' => 'category_Табель']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $confirmText, $keyboard);
+    }
+
+    private function handleAbsenceConfirmation(CallbackQuery $callbackQuery, Conversation $conversation): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        $userId = $callbackQuery->getFrom()->getId();
+        $messageId = $callbackQuery->getMessage()->getMessageId();
+
+        error_log("TabelHandler: handleAbsenceConfirmation for user {$userId}");
+
+        // Get absence data from conversation
+        $absenceType = $conversation->notes['absence_type'] ?? null;
+        $startDate = $conversation->notes['absence_start_date'] ?? null;
+        $endDate = $conversation->notes['absence_end_date'] ?? null;
+        $dayCount = $conversation->notes['absence_day_count'] ?? 0;
+
+        if (!$absenceType || !$startDate || !$endDate) {
+            error_log("TabelHandler: Absence confirmation missing data - type: {$absenceType}, start: {$startDate}, end: {$endDate}");
+            $this->messageService->sendMessage($chatId, '❌ Ошибка: данные отсутствия не найдены. Попробуйте заново.');
+            return $this->handleMainTabel($chatId, null);
+        }
+
+        // Get user FIO
+        $userData = $this->databaseService->getUserData($userId);
+        $fio = $userData['fio'] ?? 'Без ФИО';
+
+        if ($fio === 'Без ФИО') {
+            $text = '<b>Заполните ФИО (один раз) командой /fio Фамилия Имя Отчество</b>';
+            return $this->messageService->sendMessage($chatId, $text);
+        }
+
+        // Delete confirmation message
+        try {
+            \Longman\TelegramBot\Request::deleteMessage([
+                'chat_id' => $chatId,
+                'message_id' => $messageId
+            ]);
+        } catch (\Exception $e) {
+            error_log("TabelHandler: Failed to delete absence confirmation message: " . $e->getMessage());
+        }
+
+        // Save entries via TabelEntry
+        $success = $this->tabelEntry->addAbsenceEntries($userId, $fio, $startDate, $endDate, $absenceType, $chatId);
+
+        // Clear absence state
+        unset($conversation->notes['absence_type']);
+        unset($conversation->notes['awaiting_absence_start_date']);
+        unset($conversation->notes['awaiting_absence_end_date']);
+        unset($conversation->notes['absence_start_date']);
+        unset($conversation->notes['absence_end_date']);
+        unset($conversation->notes['absence_day_count']);
+        $conversation->update();
+
+        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+
+        if ($success) {
+            $text = "✅ {$emoji} {$absenceType} с {$startDate} по {$endDate} ({$dayCount} дн.) — записи добавлены";
+        } else {
+            $text = "❌ Ошибка сохранения записей. Попробуйте позже или обратитесь к администратору.";
+        }
+
+        return $this->messageService->sendMessage($chatId, $text);
     }
 
     private function handleDateSelectionMenu(string $chatId, ?int $messageId = null): ServerResponse
@@ -2010,7 +2340,10 @@ class TabelHandler implements CallbackHandlerInterface
             $conversation->update();
             
             $text = "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 25.12.2023):";
-            return $this->messageService->sendMessage($chatId, $text);
+            $keyboard = [
+                [['text' => '❌ Отмена', 'callback_data' => 'category_Табель']]
+            ];
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
         }
         
         if ($date) {
@@ -4346,6 +4679,114 @@ class TabelHandler implements CallbackHandlerInterface
         
         error_log("🔥 ШМР DEBUG: User validation PASSED - FIO: '{$userData['fio']}', functional_direction: '{$userData['functional_direction']}'");
         
+        // ========== MILESTONE PROGRESS SURVEY CHECK ==========
+        // Check if this is a PNR "Работы по графику" activity that requires survey
+        $milestoneProgressService = $this->getMilestoneProgressService();
+        $milestoneName = $milestoneProgressService->mapActivityToMilestone($activityType);
+        
+        if ($milestoneName !== null && $projectCode !== 'Unknown' && $projectCode !== 'Общие работы') {
+            error_log("📊 MILESTONE SURVEY: Checking PNR survey for {$projectCode}/{$milestoneName}");
+            
+            // Check if we already have the survey response in conversation
+            if (isset($conversation->notes['milestone_survey_completed']) && $conversation->notes['milestone_survey_completed'] === true) {
+                error_log("📊 MILESTONE SURVEY: Survey already completed, proceeding with tabel entry");
+                // Clear the flag for next time
+                unset($conversation->notes['milestone_survey_completed']);
+                $conversation->update();
+            } else {
+                // Check if survey should be shown
+                if ($milestoneProgressService->shouldShowSurvey($projectCode, $milestoneName, 'ПНР')) {
+                    error_log("📊 MILESTONE SURVEY: Showing PNR survey form for first employee");
+                    
+                    // Save pending data for after survey
+                    $conversation->notes['state'] = 'awaiting_milestone_progress';
+                    $conversation->notes['pending_activity_type'] = $activityType;
+                    $conversation->notes['pending_project_code'] = $projectCode;
+                    $conversation->notes['pending_milestone_name'] = $milestoneName;
+                    $conversation->notes['pending_work_type'] = 'ПНР';
+                    $conversation->notes['pending_idle_reason'] = $idleReason;
+                    $conversation->notes['pending_tabel_date'] = $date;
+                    $conversation->notes['pending_user_id'] = $userId;
+                    $conversation->notes['pending_fio'] = $fio;
+                    $conversation->notes['pending_chat_id'] = $chatId;
+                    $conversation->update();
+                    
+                    // Show survey form
+                    return $this->showMilestoneProgressSurvey($chatId, $projectCode, $milestoneName, $conversation);
+                } else {
+                    error_log("📊 MILESTONE SURVEY: Not time for PNR survey, showing info message");
+                    // Show info message for non-survey users (don't block tabel entry)
+                    $lastEstimate = $milestoneProgressService->getLastEstimate($projectCode, $milestoneName, 'ПНР');
+                    if ($lastEstimate) {
+                        $planHours = $milestoneProgressService->getMilestonePlanHours($projectCode, $milestoneName, 'ПНР') ?? 0;
+                        $factHours = $milestoneProgressService->getMilestoneFactHours($projectCode, $milestoneName, 'ПНР');
+                        $efficiency = $lastEstimate['efficiency_at_estimate'] ?? 0;
+                        
+                        $infoMessage = $milestoneProgressService->formatInfoMessage(
+                            $projectCode,
+                            $milestoneName,
+                            $lastEstimate,
+                            $efficiency
+                        );
+                        // Send info message but don't block - continue to tabel entry
+                        $this->messageService->sendMessage($chatId, $infoMessage);
+                    }
+                }
+            }
+        }
+        
+        // Check if this is an SMR "Работы по графику" activity that requires survey
+        $smrSubmilestone = $milestoneProgressService->mapSMRActivityToSubmilestone($activityType);
+        
+        if ($smrSubmilestone !== null && $projectCode !== 'Unknown' && $projectCode !== 'Общие работы') {
+            error_log("📊 MILESTONE SURVEY: Checking SMR survey for {$projectCode}/{$smrSubmilestone}");
+            
+            // Check if we already have the survey response in conversation
+            if (isset($conversation->notes['milestone_survey_completed']) && $conversation->notes['milestone_survey_completed'] === true) {
+                error_log("📊 MILESTONE SURVEY: SMR survey already completed, proceeding with tabel entry");
+                unset($conversation->notes['milestone_survey_completed']);
+                $conversation->update();
+            } else {
+                // Check if survey should be shown
+                if ($milestoneProgressService->shouldShowSurvey($projectCode, $smrSubmilestone, 'ШМР')) {
+                    error_log("📊 MILESTONE SURVEY: Showing SMR survey form for {$smrSubmilestone}");
+                    
+                    // Save pending data for after survey
+                    $conversation->notes['state'] = 'awaiting_milestone_progress';
+                    $conversation->notes['pending_activity_type'] = $activityType;
+                    $conversation->notes['pending_project_code'] = $projectCode;
+                    $conversation->notes['pending_milestone_name'] = $smrSubmilestone;
+                    $conversation->notes['pending_work_type'] = 'ШМР';
+                    $conversation->notes['pending_idle_reason'] = $idleReason;
+                    $conversation->notes['pending_tabel_date'] = $date;
+                    $conversation->notes['pending_user_id'] = $userId;
+                    $conversation->notes['pending_fio'] = $fio;
+                    $conversation->notes['pending_chat_id'] = $chatId;
+                    $conversation->update();
+                    
+                    // Show survey form
+                    return $this->showMilestoneProgressSurvey($chatId, $projectCode, $smrSubmilestone, $conversation);
+                } else {
+                    error_log("📊 MILESTONE SURVEY: Not time for SMR survey, showing info message");
+                    $lastEstimate = $milestoneProgressService->getLastEstimate($projectCode, $smrSubmilestone, 'ШМР');
+                    if ($lastEstimate) {
+                        $planHours = $milestoneProgressService->getMilestonePlanHours($projectCode, $smrSubmilestone, 'ШМР') ?? 0;
+                        $factHours = $milestoneProgressService->getMilestoneFactHours($projectCode, $smrSubmilestone, 'ШМР');
+                        $efficiency = $lastEstimate['efficiency_at_estimate'] ?? 0;
+                        
+                        $infoMessage = $milestoneProgressService->formatInfoMessage(
+                            $projectCode,
+                            $smrSubmilestone,
+                            $lastEstimate,
+                            $efficiency
+                        );
+                        $this->messageService->sendMessage($chatId, $infoMessage);
+                    }
+                }
+            }
+        }
+        // ========== END MILESTONE PROGRESS SURVEY CHECK ==========
+        
         error_log("🔥 ШМР DEBUG - About to call addEntry with: activityType='{$activityType}', userId={$userId}, fio='{$fio}', date='{$date}', projectCode='{$projectCode}', idleReason='{$idleReason}'");
         
         // CRITICAL DEBUG: Add extensive logging before database call
@@ -4391,23 +4832,23 @@ class TabelHandler implements CallbackHandlerInterface
             // Use sendOrEditMessage with delete flag to remove confirmation message and send final report
             $response = $this->messageService->sendOrEditMessage($chatId, $message, null, $messageId, 'HTML', true);
             
-            // Check if user should receive reminder about notes feature
-            if ($this->shouldSendNotesReminder($activityType)) {
-                error_log("📝 Sending notes reminder for activity: {$activityType}");
-                $reminderText = "💡 <b>Не забудь сообщить о важном!</b>\n\nОставь заметку для коллег:";
-                $context = $this->getNotesContext($activityType);
-                $keyboard = $this->messageService->createNotesReminderKeyboard($context);
-                
-                // Extract messageId for delete+send effect
-                $messageId = null;
-                $callbackMessage = $callbackQuery->getMessage();
-                if ($callbackMessage !== null) {
-                    $messageId = $callbackMessage->getMessageId();
-                }
-                
-                // Use sendOrEditMessage with delete flag to maintain clean UI
-                $this->messageService->sendOrEditMessage($chatId, $reminderText, $keyboard, $messageId, 'HTML', true);
-            }
+            // Notes reminder disabled per user request
+            // if ($this->shouldSendNotesReminder($activityType)) {
+            //     error_log("📝 Sending notes reminder for activity: {$activityType}");
+            //     $reminderText = "💡 <b>Не забудь сообщить о важном!</b>\n\nОставь заметку для коллег:";
+            //     $context = $this->getNotesContext($activityType);
+            //     $keyboard = $this->messageService->createNotesReminderKeyboard($context);
+            //     
+            //     // Extract messageId for delete+send effect
+            //     $messageId = null;
+            //     $callbackMessage = $callbackQuery->getMessage();
+            //     if ($callbackMessage !== null) {
+            //         $messageId = $callbackMessage->getMessageId();
+            //     }
+            //     
+            //     // Use sendOrEditMessage with delete flag to maintain clean UI
+            //     $this->messageService->sendOrEditMessage($chatId, $reminderText, $keyboard, $messageId, 'HTML', true);
+            // }
             
             // 🔓 CRITICAL FIX: Release callback lock BEFORE returning
             if (isset($conversation->notes['_active_callback_lock'])) {
@@ -4477,8 +4918,8 @@ class TabelHandler implements CallbackHandlerInterface
      */
     private function shouldSendNotesReminder(string $activityType): bool
     {
-        // 1. ZPI participation (Проведение ЗПИ / Участие в ЗПИ)
-        if ($activityType === 'УчастиеВЗПИ') {
+        // 1. ZPI participation (Проведение ЗПИ / Участие в ЗПИ) and sub-activities
+        if ($activityType === 'УчастиеВЗПИ' || str_starts_with($activityType, 'ЗПИ_')) {
             return true;
         }
         
@@ -5970,6 +6411,13 @@ class TabelHandler implements CallbackHandlerInterface
                 'ШМР_МонтЭлУкр_ПодтВех' => 'cat_ШМР_МонтЭлУкр_ПодтВех_yes',
                 'ШМР_СборКровл_ПодтВех' => 'cat_ШМР_СборКровл_ПодтВех_yes',
                 'ШМР_МонтТруб_ПодтВех' => 'cat_ШМР_МонтТруб_ПодтВех_yes',
+                // NEW: Level 2 sub-milestone confirmation callbacks (under Внутриблочный монтаж)
+                'ШМР_ТехОб_ПодтВех' => 'cat_ШМР_ТехОб_ПодтВех_yes',
+                'ШМР_ЭлОб_ПодтВех' => 'cat_ШМР_ЭлОб_ПодтВех_yes',
+                'ШМР_ПожСигн_ПодтВех' => 'cat_ШМР_ПожСигн_ПодтВех_yes',
+                'ШМР_ОхрСигн_ПодтВех' => 'cat_ШМР_ОхрСигн_ПодтВех_yes',
+                'ШМР_Автом_ПодтВех' => 'cat_ШМР_Автом_ПодтВех_yes',
+                'ШМР_ОтоплВент_ПодтВех' => 'cat_ШМР_ОтоплВент_ПодтВех_yes',
                 // NEW: Add missing technological equipment milestone activities
                 'ШМР_ГидроПневмоИспытания_ПодтВех' => 'cat_ШМР_ГидрИсп_ПодтВех_yes',
                 'ШМР_МонтажТехнологическогоОборудования_ПодтВех' => 'cat_ШМР_МонтТехОб_ПодтВех_yes',
@@ -6666,12 +7114,62 @@ class TabelHandler implements CallbackHandlerInterface
         }
         
         // Handle project activities (terminal activities - direct to confirmation)
-        // Participation in ZPI
-        if ($category === 'Табель_УчастиеВЗПИ') {
-            error_log("TabelHandler: handling participation in ZPI");
+        // Participation in ZPI - now shows sub-activities submenu
+        if ($category === 'Табель_УчастиеВЗПИ' || $category === 'Табель_ЗПИ_Меню') {
+            error_log("TabelHandler: handling ZPI sub-activities menu (ПНР context)");
             $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
-            $confirmationText = $this->tabelEntry->getConfirmationMessage('УчастиеВЗПИ', $projectCode);
-            $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_УчастиеВЗПИ_yes");
+            $keyboard = $this->messageService->createZPISubActivitiesKeyboard('cat_ТабПроектнаяДеят');
+            $text = "<b>🏢 Участие в ЗПИ для проекта {$projectCode}</b>\n\nВыберите вид работ:";
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // Participation in ZPI - ШМР context (only 2 sub-activities)
+        if ($category === 'Табель_ЗПИ_Меню_ШМР') {
+            error_log("TabelHandler: handling ZPI sub-activities menu (ШМР context)");
+            $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
+            $keyboard = $this->messageService->createZPISubActivitiesKeyboardSMR('cat_ТабПроектнаяДеят_ШМР');
+            $text = "<b>🏢 Участие в ЗПИ для проекта {$projectCode}</b>\n\nВыберите вид работ:";
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+        
+        // ZPI sub-activities - direct to confirmation
+        if ($category === 'Табель_ЗПИ_ПровШк') {
+            error_log("TabelHandler: handling ZPI sub-activity: Проверка/наладка шкафов");
+            $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
+            $confirmationText = $this->tabelEntry->getConfirmationMessage('ЗПИ_ПровШк', $projectCode);
+            $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_ЗПИ_ПровШк_yes");
+            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+        }
+        
+        if ($category === 'Табель_ЗПИ_НастОб') {
+            error_log("TabelHandler: handling ZPI sub-activity: Настройка/наладка оборудования");
+            $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
+            $confirmationText = $this->tabelEntry->getConfirmationMessage('ЗПИ_НастОб', $projectCode);
+            $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_ЗПИ_НастОб_yes");
+            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+        }
+        
+        if ($category === 'Табель_ЗПИ_ФункПров') {
+            error_log("TabelHandler: handling ZPI sub-activity: Функциональная проверка систем");
+            $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
+            $confirmationText = $this->tabelEntry->getConfirmationMessage('ЗПИ_ФункПров', $projectCode);
+            $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_ЗПИ_ФункПров_yes");
+            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+        }
+        
+        if ($category === 'Табель_ЗПИ_КонтрПр') {
+            error_log("TabelHandler: handling ZPI sub-activity: Контроль производства");
+            $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
+            $confirmationText = $this->tabelEntry->getConfirmationMessage('ЗПИ_КонтрПр', $projectCode);
+            $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_ЗПИ_КонтрПр_yes");
+            return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
+        }
+        
+        if ($category === 'Табель_ЗПИ_КомисПр') {
+            error_log("TabelHandler: handling ZPI sub-activity: Комиссионная приёмка");
+            $projectCode = $conversation->notes['project_code'] ?? 'Unknown';
+            $confirmationText = $this->tabelEntry->getConfirmationMessage('ЗПИ_КомисПр', $projectCode);
+            $keyboard = $this->messageService->createConfirmationKeyboard("category_Табель_ЗПИ_КомисПр_yes");
             return $this->messageService->sendMessage($chatId, $confirmationText, $keyboard);
         }
         
@@ -8995,11 +9493,46 @@ class TabelHandler implements CallbackHandlerInterface
             error_log("🔧 WARRANTY DEBUG: explicit context provided: {$context}");
         }
         
-        $keyboard = $this->messageService->createWarrantyEquipmentKeyboard($context);
+        // Fetch project claims for warranty menu
+        $claims = [];
+        $totalClaimsCount = 0;
+        $projectCode = $conversation ? ($conversation->notes['project_code'] ?? null) : null;
+        
+        if ($projectCode && $projectCode !== 'Unknown') {
+            $claimSvc = $this->getClaimService();
+            if ($claimSvc !== null) {
+                $claims = $claimSvc->getActiveAndPendingClaimsByProject($projectCode, 5);
+                $totalClaimsCount = $claimSvc->getActiveAndPendingClaimsCountByProject($projectCode);
+                error_log("🔧 WARRANTY DEBUG: found {$totalClaimsCount} claims for project {$projectCode}");
+            }
+        }
+        
+        // Store warranty return context
+        if ($conversation) {
+            $conversation->notes['claim_return_warranty'] = true;
+            $warrantyBackCb = $context === 'supervision' 
+                ? 'category_Табель_ШМ_РабГарантии' 
+                : 'cat_ТабГарантии';
+            $conversation->notes['claim_warranty_back_cb'] = $warrantyBackCb;
+            $conversation->update();
+        }
+        
+        $keyboard = $this->messageService->createWarrantyEquipmentKeyboard($context, $claims);
         error_log("🔧 WARRANTY DEBUG: warranty equipment keyboard created with " . count($keyboard) . " rows");
+        
+        $text = "<b>🛡️ Работы по гарантии</b>\n\nВыберите рекламацию в рамках текущей активности:";
+        if ($totalClaimsCount > 0) {
+            $shownCount = count($claims);
+            if ($totalClaimsCount > $shownCount) {
+                $text .= "\n\n📋 Рекламации проекта (показано {$shownCount} из {$totalClaimsCount}):";
+            } else {
+                $text .= "\n\n📋 Рекламации проекта ({$totalClaimsCount}):";
+            }
+        }
+        
         return $this->messageService->sendOrEditMessage(
             $chatId, 
-            "<b>🛡️ Работы по гарантии</b>\n\nВыберите тип оборудования:",
+            $text,
             $keyboard,
             $messageId,
             'HTML',
@@ -9081,4 +9614,220 @@ class TabelHandler implements CallbackHandlerInterface
             true // Delete old message and send new for clean effect
         );
     }
+
+    // ========== MILESTONE PROGRESS SURVEY METHODS ==========
+    
+    /**
+     * Show milestone progress survey form
+     */
+    private function showMilestoneProgressSurvey(string $chatId, string $projectCode, string $milestoneName, Conversation $conversation): ServerResponse
+    {
+        $milestoneProgressService = $this->getMilestoneProgressService();
+        $workType = $conversation->notes['pending_work_type'] ?? 'ПНР';
+        
+        // Get data for survey message using correct work_type
+        $lastEstimate = $milestoneProgressService->getLastEstimate($projectCode, $milestoneName, $workType);
+        $planHours = $milestoneProgressService->getMilestonePlanHours($projectCode, $milestoneName, $workType) ?? 0;
+        $factHours = $milestoneProgressService->getMilestoneFactHours($projectCode, $milestoneName, $workType);
+        
+        // Calculate individual milestone efficiency (not total PNR/SMR)
+        $milestoneEfficiency = null;
+        if ($planHours > 0 && $lastEstimate) {
+            $milestoneEfficiency = $milestoneProgressService->calculateEfficiency(
+                (float)$lastEstimate['estimated_percent'], $factHours, $planHours
+            );
+        }
+        
+        // Calculate total stage efficiency (PNR or SMR)
+        $totalEfficiency = ($workType === 'ШМР')
+            ? $milestoneProgressService->getSMRTotalEfficiency($projectCode)
+            : $milestoneProgressService->getPNRTotalEfficiency($projectCode);
+        
+        // Store previous percent for validation
+        $previousPercent = $lastEstimate['estimated_percent'] ?? 0;
+        $conversation->notes['milestone_previous_percent'] = $previousPercent;
+        $conversation->notes['milestone_plan_hours'] = $planHours;
+        $conversation->notes['milestone_fact_hours'] = $factHours;
+        $conversation->update();
+        
+        // Format survey message
+        $message = $milestoneProgressService->formatSurveyMessage(
+            $projectCode,
+            $milestoneName,
+            $lastEstimate,
+            $planHours,
+            $factHours,
+            $milestoneEfficiency,
+            $totalEfficiency,
+            $workType
+        );
+        
+        // Survey is mandatory - no skip button
+        return $this->messageService->sendMessage($chatId, $message);
+    }
+    
+    /**
+     * Handle milestone progress percentage input from user
+     */
+    public function handleMilestoneProgressInput(Message $message, Conversation $conversation): ServerResponse
+    {
+        $chatId = $message->getChat()->getId();
+        $userId = $message->getFrom()->getId();
+        $text = trim($message->getText());
+        
+        error_log("📊 MILESTONE SURVEY: Processing input '{$text}' from user {$userId}");
+        
+        // Validate input is a number
+        if (!is_numeric($text)) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ Пожалуйста, введите число от 0 до 100"
+            );
+        }
+        
+        $percent = (int)$text;
+        
+        // Validate range
+        if ($percent < 0 || $percent > 100) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ Процент должен быть от 0 до 100"
+            );
+        }
+        
+        // Validate monotonicity
+        $previousPercent = $conversation->notes['milestone_previous_percent'] ?? 0;
+        if ($percent < $previousPercent) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ Процент не может быть меньше предыдущего значения ({$previousPercent}%)"
+            );
+        }
+        
+        // Get pending data
+        $projectCode = $conversation->notes['pending_project_code'] ?? '';
+        $milestoneName = $conversation->notes['pending_milestone_name'] ?? '';
+        $workType = $conversation->notes['pending_work_type'] ?? 'ПНР';
+        $planHours = $conversation->notes['milestone_plan_hours'] ?? 0;
+        $factHours = $conversation->notes['milestone_fact_hours'] ?? 0;
+        $fio = $conversation->notes['pending_fio'] ?? '';
+        
+        // Calculate efficiency
+        $milestoneProgressService = $this->getMilestoneProgressService();
+        $efficiency = $milestoneProgressService->calculateEfficiency($percent, $factHours, $planHours);
+        
+        // Save estimate
+        $saveResult = $milestoneProgressService->saveEstimate([
+            'project_code' => $projectCode,
+            'milestone_name' => $milestoneName,
+            'work_type' => $workType,
+            'estimated_percent' => $percent,
+            'estimator_user_id' => $userId,
+            'estimator_fio' => $fio,
+            'plan_hours' => $planHours,
+            'fact_hours' => $factHours,
+            'efficiency' => $efficiency
+        ]);
+        
+        if (!$saveResult) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ Ошибка сохранения оценки. Попробуйте ещё раз."
+            );
+        }
+        
+        // Show confirmation message
+        $confirmMessage = $milestoneProgressService->formatConfirmationMessage(
+            $milestoneName,
+            $percent,
+            $efficiency
+        );
+        
+        $this->messageService->sendMessage($chatId, $confirmMessage);
+        
+        // Handle 100% completion - auto-submit milestone achieved entry
+        if ($percent === 100) {
+            error_log("📊 MILESTONE SURVEY: 100% reached - auto-submitting milestone completion");
+            
+            $date = $conversation->notes['pending_tabel_date'] ?? date('d.m.Y');
+            
+            // Create special activity type for milestone completion
+            $milestoneCompletedActivityType = "ВехаЗавершена";
+            $completionLabel = ($workType === 'ШМР') ? 'Этап шеф-монтажа завершен' : 'Этап наладки завершен';
+            
+            // Add milestone completion entry to tabel
+            $milestoneEntrySuccess = $this->tabelEntry->addEntry(
+                $userId, 
+                $fio, 
+                $date, 
+                $projectCode, 
+                $milestoneCompletedActivityType, 
+                $chatId,
+                "{$completionLabel}: {$milestoneName}"
+            );
+            
+            if ($milestoneEntrySuccess) {
+                error_log("✅ MILESTONE SURVEY: Milestone completion entry added");
+                $this->messageService->sendMessage(
+                    $chatId, 
+                    "🏆 <b>Веха достигнута!</b>\n" .
+                    "Этап «{$milestoneName}» отмечен как завершённый в табеле."
+                );
+            } else {
+                error_log("❌ MILESTONE SURVEY: Failed to add milestone completion entry");
+            }
+        }
+        
+        // Mark survey as completed and continue with tabel entry
+        $conversation->notes['milestone_survey_completed'] = true;
+        $conversation->notes['state'] = null;
+        $conversation->update();
+        
+        // Continue with tabel entry
+        return $this->continueTabelEntryAfterSurvey($conversation, $chatId);
+    }
+    
+    /**
+     * Continue tabel entry after survey completion
+     */
+    private function continueTabelEntryAfterSurvey(Conversation $conversation, string $chatId): ServerResponse
+    {
+        // Restore pending data
+        $userId = $conversation->notes['pending_user_id'] ?? 0;
+        $fio = $conversation->notes['pending_fio'] ?? '';
+        $date = $conversation->notes['pending_tabel_date'] ?? date('d.m.Y');
+        $projectCode = $conversation->notes['pending_project_code'] ?? '';
+        $activityType = $conversation->notes['pending_activity_type'] ?? '';
+        $idleReason = $conversation->notes['pending_idle_reason'] ?? '';
+        
+        error_log("📊 MILESTONE SURVEY: Continuing tabel entry for {$activityType}");
+        
+        // Clear pending data
+        unset($conversation->notes['pending_user_id']);
+        unset($conversation->notes['pending_fio']);
+        unset($conversation->notes['pending_tabel_date']);
+        unset($conversation->notes['pending_project_code']);
+        unset($conversation->notes['pending_activity_type']);
+        unset($conversation->notes['pending_idle_reason']);
+        unset($conversation->notes['pending_milestone_name']);
+        unset($conversation->notes['pending_chat_id']);
+        unset($conversation->notes['milestone_previous_percent']);
+        unset($conversation->notes['milestone_plan_hours']);
+        unset($conversation->notes['milestone_fact_hours']);
+        $conversation->update();
+        
+        // Add tabel entry
+        $success = $this->tabelEntry->addEntry($userId, $fio, $date, $projectCode, $activityType, $chatId, $idleReason);
+        
+        if ($success) {
+            error_log("✅ MILESTONE SURVEY: Tabel entry added successfully");
+            $message = $this->tabelEntry->createTabelMessage($fio, $date, $projectCode, $activityType, $idleReason);
+            return $this->messageService->sendMessage($chatId, $message);
+        } else {
+            error_log("❌ MILESTONE SURVEY: Failed to add tabel entry");
+            return $this->messageService->sendMessage($chatId, "❌ Ошибка при добавлении записи в табель");
+        }
+    }
+    
+    // ========== END MILESTONE PROGRESS SURVEY METHODS ==========
 }

@@ -1378,4 +1378,412 @@ class DatabaseService
         
         return false;
     }
+
+    // ==================== TABEL MANAGEMENT METHODS ====================
+
+    /**
+     * Получить записи табеля с фильтрацией
+     * 
+     * @param array $filters Фильтры: user_id, project_code, date_from, date_to, search
+     * @param int $limit Максимальное количество записей
+     * @param int $offset Смещение для пагинации
+     * @return array Массив записей
+     */
+    public function getTabelEntriesFiltered(array $filters = [], int $limit = 20, int $offset = 0): array
+    {
+        $query = "SELECT ot.id, ot.user_id, ot.dt + INTERVAL 2 HOUR as dt, ot.message,
+                         od.data->>'$.fio' as user_fio
+                  FROM ozna_tabel ot
+                  LEFT JOIN ozna_data od ON ot.user_id = od.user_id
+                  WHERE 1=1";
+        
+        $params = [];
+        $types = "";
+        
+        // Фильтр по пользователю
+        if (!empty($filters['user_id'])) {
+            $query .= " AND ot.user_id = ?";
+            $params[] = $filters['user_id'];
+            $types .= "i";
+        }
+        
+        // Фильтр по проекту
+        if (!empty($filters['project_code'])) {
+            $query .= " AND ot.message LIKE ?";
+            $params[] = $filters['project_code'] . "%";
+            $types .= "s";
+        }
+        
+        // Фильтр по дате в тексте сообщения
+        // Поддерживаемые форматы:
+        // 1. Проектные: ✅ДД.ММ.ГГГГ, Проект
+        // 2. Текущая деятельность: от <b>ДД.ММ.ГГГГ</b>:
+        // 3. Отпуск/Больничный: 🏖 ДД.ММ.ГГГГ: или 🏥 ДД.ММ.ГГГГ:
+        if (!empty($filters['message_date'])) {
+            $dateObj = \DateTime::createFromFormat('Y-m-d', $filters['message_date']);
+            if ($dateObj) {
+                $searchDate = $dateObj->format('d.m.Y');
+                // Ищем дату в любом из форматов (ДД.ММ.ГГГГ может быть после ✅, 🏖, 🏥 или в тегах <b>)
+                $query .= " AND ot.message LIKE ?";
+                $params[] = "%" . $searchDate . "%";
+                $types .= "s";
+            }
+        }
+        
+        // Фильтр по диапазону дат в тексте сообщения
+        if (!empty($filters['message_date_from']) && !empty($filters['message_date_to'])) {
+            $dateFrom = \DateTime::createFromFormat('Y-m-d', $filters['message_date_from']);
+            $dateTo = \DateTime::createFromFormat('Y-m-d', $filters['message_date_to']);
+            
+            if ($dateFrom && $dateTo) {
+                // Генерируем условия для каждой даты в диапазоне (макс 62 дня)
+                $daysDiff = $dateFrom->diff($dateTo)->days;
+                
+                if ($daysDiff <= 62) {
+                    $dateConditions = [];
+                    $current = clone $dateFrom;
+                    while ($current <= $dateTo) {
+                        $searchDate = $current->format('d.m.Y');
+                        $dateConditions[] = "ot.message LIKE ?";
+                        $params[] = "%" . $searchDate . "%";
+                        $types .= "s";
+                        $current->modify('+1 day');
+                    }
+                    
+                    if (!empty($dateConditions)) {
+                        $query .= " AND (" . implode(" OR ", $dateConditions) . ")";
+                    }
+                } else {
+                    // Для больших диапазонов используем поиск по dt
+                    $query .= " AND DATE(ot.dt + INTERVAL 2 HOUR) >= ? AND DATE(ot.dt + INTERVAL 2 HOUR) <= ?";
+                    $params[] = $filters['message_date_from'];
+                    $params[] = $filters['message_date_to'];
+                    $types .= "ss";
+                }
+            }
+        }
+        
+        // Фильтр по дате отправки (dt) - для обратной совместимости
+        if (!empty($filters['date_from']) && empty($filters['message_date'])) {
+            $query .= " AND DATE(ot.dt + INTERVAL 2 HOUR) >= ?";
+            $params[] = $filters['date_from'];
+            $types .= "s";
+        }
+        
+        // Фильтр по дате отправки до
+        if (!empty($filters['date_to']) && empty($filters['message_date']) && empty($filters['message_date_from'])) {
+            $query .= " AND DATE(ot.dt + INTERVAL 2 HOUR) <= ?";
+            $params[] = $filters['date_to'];
+            $types .= "s";
+        }
+        
+        // Поиск по тексту
+        if (!empty($filters['search'])) {
+            $query .= " AND ot.message LIKE ?";
+            $params[] = "%" . $filters['search'] . "%";
+            $types .= "s";
+        }
+        
+        $query .= " ORDER BY ot.dt DESC LIMIT ? OFFSET ?";
+        $params[] = $limit;
+        $params[] = $offset;
+        $types .= "ii";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        if (!empty($types)) {
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        $entries = [];
+        while ($row = $result->fetch_assoc()) {
+            $entries[] = $row;
+        }
+        
+        return $entries;
+    }
+
+    /**
+     * Получить общее количество записей с фильтрацией
+     */
+    public function getTabelEntriesCount(array $filters = []): int
+    {
+        $query = "SELECT COUNT(*) as cnt FROM ozna_tabel ot WHERE 1=1";
+        
+        $params = [];
+        $types = "";
+        
+        if (!empty($filters['user_id'])) {
+            $query .= " AND ot.user_id = ?";
+            $params[] = $filters['user_id'];
+            $types .= "i";
+        }
+        
+        if (!empty($filters['project_code'])) {
+            $query .= " AND ot.message LIKE ?";
+            $params[] = $filters['project_code'] . "%";
+            $types .= "s";
+        }
+        
+        // Фильтр по дате в тексте сообщения (универсальный поиск ДД.ММ.ГГГГ)
+        if (!empty($filters['message_date'])) {
+            $dateObj = \DateTime::createFromFormat('Y-m-d', $filters['message_date']);
+            if ($dateObj) {
+                $searchDate = $dateObj->format('d.m.Y');
+                $query .= " AND ot.message LIKE ?";
+                $params[] = "%" . $searchDate . "%";
+                $types .= "s";
+            }
+        }
+        
+        // Фильтр по диапазону дат в тексте сообщения
+        if (!empty($filters['message_date_from']) && !empty($filters['message_date_to'])) {
+            $dateFrom = \DateTime::createFromFormat('Y-m-d', $filters['message_date_from']);
+            $dateTo = \DateTime::createFromFormat('Y-m-d', $filters['message_date_to']);
+            
+            if ($dateFrom && $dateTo) {
+                $daysDiff = $dateFrom->diff($dateTo)->days;
+                
+                if ($daysDiff <= 62) {
+                    $dateConditions = [];
+                    $current = clone $dateFrom;
+                    while ($current <= $dateTo) {
+                        $searchDate = $current->format('d.m.Y');
+                        $dateConditions[] = "ot.message LIKE ?";
+                        $params[] = "%" . $searchDate . "%";
+                        $types .= "s";
+                        $current->modify('+1 day');
+                    }
+                    
+                    if (!empty($dateConditions)) {
+                        $query .= " AND (" . implode(" OR ", $dateConditions) . ")";
+                    }
+                } else {
+                    $query .= " AND DATE(ot.dt + INTERVAL 2 HOUR) >= ? AND DATE(ot.dt + INTERVAL 2 HOUR) <= ?";
+                    $params[] = $filters['message_date_from'];
+                    $params[] = $filters['message_date_to'];
+                    $types .= "ss";
+                }
+            }
+        }
+        
+        if (!empty($filters['date_from']) && empty($filters['message_date']) && empty($filters['message_date_from'])) {
+            $query .= " AND DATE(ot.dt + INTERVAL 2 HOUR) >= ?";
+            $params[] = $filters['date_from'];
+            $types .= "s";
+        }
+        
+        if (!empty($filters['date_to']) && empty($filters['message_date']) && empty($filters['message_date_from'])) {
+            $query .= " AND DATE(ot.dt + INTERVAL 2 HOUR) <= ?";
+            $params[] = $filters['date_to'];
+            $types .= "s";
+        }
+        
+        if (!empty($filters['search'])) {
+            $query .= " AND ot.message LIKE ?";
+            $params[] = "%" . $filters['search'] . "%";
+            $types .= "s";
+        }
+        
+        $stmt = $this->getConnection()->prepare($query);
+        if (!empty($types)) {
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result->fetch_assoc();
+        
+        return (int)$row['cnt'];
+    }
+
+    /**
+     * Получить запись табеля по ID
+     */
+    public function getTabelEntryById(int $entryId): ?array
+    {
+        $query = "SELECT ot.id, ot.user_id, ot.dt + INTERVAL 2 HOUR as dt, ot.message,
+                         od.data->>'$.fio' as user_fio
+                  FROM ozna_tabel ot
+                  LEFT JOIN ozna_data od ON ot.user_id = od.user_id
+                  WHERE ot.id = ?";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("i", $entryId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        return $result->fetch_assoc() ?: null;
+    }
+
+    /**
+     * Удалить запись табеля
+     */
+    public function deleteTabelEntry(int $entryId): bool
+    {
+        $query = "DELETE FROM ozna_tabel WHERE id = ?";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("i", $entryId);
+        $success = $stmt->execute();
+        
+        if ($success && $stmt->affected_rows > 0) {
+            error_log("DatabaseService: Tabel entry #{$entryId} deleted");
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Обновить запись табеля (изменить проект в сообщении)
+     */
+    public function updateTabelEntryProject(int $entryId, string $oldProjectCode, string $newProjectCode): bool
+    {
+        // Сначала получаем текущее сообщение
+        $entry = $this->getTabelEntryById($entryId);
+        if (!$entry) {
+            return false;
+        }
+        
+        // Заменяем код проекта в сообщении
+        $newMessage = str_replace($oldProjectCode, $newProjectCode, $entry['message']);
+        
+        $query = "UPDATE ozna_tabel SET message = ? WHERE id = ?";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("si", $newMessage, $entryId);
+        $success = $stmt->execute();
+        
+        if ($success && $stmt->affected_rows > 0) {
+            error_log("DatabaseService: Tabel entry #{$entryId} project updated from '{$oldProjectCode}' to '{$newProjectCode}'");
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Обновить запись табеля (изменить дату в сообщении)
+     */
+    public function updateTabelEntryDate(int $entryId, string $oldDate, string $newDate): bool
+    {
+        // Сначала получаем текущее сообщение
+        $entry = $this->getTabelEntryById($entryId);
+        if (!$entry) {
+            return false;
+        }
+        
+        // Форматируем даты для поиска и замены (формат ДД.ММ.ГГГГ)
+        $oldDateFormatted = date('d.m.Y', strtotime($oldDate));
+        $newDateFormatted = date('d.m.Y', strtotime($newDate));
+        
+        // Заменяем дату в сообщении
+        $newMessage = str_replace($oldDateFormatted, $newDateFormatted, $entry['message']);
+        
+        // Проверяем что замена произошла
+        if ($newMessage === $entry['message']) {
+            error_log("DatabaseService: updateTabelEntryDate - date not found in message for entry #{$entryId}");
+            return false;
+        }
+        
+        $query = "UPDATE ozna_tabel SET message = ? WHERE id = ?";
+        
+        $stmt = $this->getConnection()->prepare($query);
+        $stmt->bind_param("si", $newMessage, $entryId);
+        $success = $stmt->execute();
+        
+        if ($success && $stmt->affected_rows > 0) {
+            error_log("DatabaseService: Tabel entry #{$entryId} date updated from '{$oldDateFormatted}' to '{$newDateFormatted}'");
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Получить список уникальных пользователей с записями в табеле
+     */
+    public function getTabelUsers(): array
+    {
+        $query = "SELECT DISTINCT ot.user_id, 
+                         COALESCE(od.data->>'$.fio', CONCAT('ID: ', ot.user_id)) as fio
+                  FROM ozna_tabel ot
+                  LEFT JOIN ozna_data od ON ot.user_id = od.user_id
+                  ORDER BY fio ASC";
+        
+        $result = $this->getConnection()->query($query);
+        
+        if (!$result) {
+            error_log("DatabaseService::getTabelUsers - Query error: " . $this->getConnection()->error);
+            return [];
+        }
+        
+        $users = [];
+        while ($row = $result->fetch_assoc()) {
+            $users[] = $row;
+        }
+        
+        error_log("DatabaseService::getTabelUsers - Found " . count($users) . " users");
+        return $users;
+    }
+
+    /**
+     * Получить список уникальных проектов из записей табеля
+     */
+    public function getTabelProjects(): array
+    {
+        // Извлекаем код проекта из начала сообщения (до первого пробела)
+        // Используем простой SUBSTRING_INDEX без REGEXP для совместимости
+        $query = "SELECT DISTINCT SUBSTRING_INDEX(message, ' ', 1) as project_code
+                  FROM ozna_tabel
+                  WHERE message IS NOT NULL AND message != ''
+                  ORDER BY project_code ASC";
+        
+        $result = $this->getConnection()->query($query);
+        
+        if (!$result) {
+            error_log("DatabaseService::getTabelProjects - Query error: " . $this->getConnection()->error);
+            return [];
+        }
+        
+        $projects = [];
+        while ($row = $result->fetch_assoc()) {
+            $code = trim($row['project_code']);
+            // Фильтруем только валидные коды проектов (минимум 2 символа, без спецсимволов)
+            if (mb_strlen($code) >= 2 && !preg_match('/[<>"\']/', $code)) {
+                $projects[] = $code;
+            }
+        }
+        
+        $projects = array_unique($projects);
+        error_log("DatabaseService::getTabelProjects - Found " . count($projects) . " projects");
+        return $projects;
+    }
+
+    /**
+     * Получить список уникальных дат из записей табеля
+     */
+    public function getTabelDates(): array
+    {
+        $query = "SELECT DISTINCT DATE(dt + INTERVAL 2 HOUR) as entry_date
+                  FROM ozna_tabel
+                  ORDER BY entry_date DESC
+                  LIMIT 60";
+        
+        $result = $this->getConnection()->query($query);
+        
+        if (!$result) {
+            error_log("DatabaseService::getTabelDates - Query error: " . $this->getConnection()->error);
+            return [];
+        }
+        
+        $dates = [];
+        while ($row = $result->fetch_assoc()) {
+            $dates[] = $row['entry_date'];
+        }
+        
+        error_log("DatabaseService::getTabelDates - Found " . count($dates) . " dates");
+        return $dates;
+    }
 }

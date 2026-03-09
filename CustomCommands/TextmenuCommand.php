@@ -328,6 +328,11 @@ class TextmenuCommand extends SystemCommand
                 $keyboard[] = [
                     ['text' => '🔐 Управление уровнями доступа', 'callback_data' => 'category_УровеньДоступа_Управление']
                 ];
+                
+                // Управление табелем - только для администраторов и выше
+                $keyboard[] = [
+                    ['text' => '📝 Управление табелем', 'callback_data' => 'category_Админка_Табель']
+                ];
             }
             
             // Разные заголовки для разных уровней
@@ -513,6 +518,39 @@ class TextmenuCommand extends SystemCommand
         $keyboard[] = [
             ['text' => '🔍 Проекты на контроле', 'callback_data' => 'pm_control']
         ];
+        
+        // Кнопка рекламаций со счётчиком ожидающих модерации
+        try {
+            $claimServiceFile = __DIR__ . '/Services/ClaimService.php';
+            if (file_exists($claimServiceFile)) {
+                require_once $claimServiceFile;
+                $claimPdo = new \PDO(
+                    'mysql:host=82.146.42.213;dbname=tg_bot;charset=utf8mb4',
+                    'WizardJIOCb',
+                    '7qQ#28051961',
+                    [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]
+                );
+                $claimService = new \Longman\TelegramBot\Commands\SystemCommands\Services\ClaimService($claimPdo);
+                $pendingClaimsCount = $claimService->getPendingClaimsCount();
+                $claimButtonText = '📋 Рекламации';
+                if ($pendingClaimsCount > 0) {
+                    $claimButtonText .= " ({$pendingClaimsCount})";
+                }
+                $keyboard[] = [
+                    ['text' => $claimButtonText, 'callback_data' => 'claim_menu']
+                ];
+            } else {
+                $keyboard[] = [
+                    ['text' => '📋 Рекламации', 'callback_data' => 'claim_menu']
+                ];
+            }
+        } catch (\Throwable $e) {
+            error_log("TextmenuCommand: Error adding claims button: " . $e->getMessage());
+            $keyboard[] = [
+                ['text' => '📋 Рекламации', 'callback_data' => 'claim_menu']
+            ];
+        }
+        
         $keyboard[] = [
             ['text' => '⬅️ Вернуться в главное меню', 'callback_data' => 'category_Главное']
         ];

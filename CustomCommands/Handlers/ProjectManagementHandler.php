@@ -193,6 +193,40 @@ class ProjectManagementHandler implements CallbackHandlerInterface
         $keyboard[] = [
             ['text' => '🔍 Проекты на контроле', 'callback_data' => 'pm_control']
         ];
+        
+        // Кнопка рекламаций со счётчиком ожидающих модерации
+        try {
+            $claimServiceFile = __DIR__ . '/../Services/ClaimService.php';
+            if (file_exists($claimServiceFile)) {
+                require_once $claimServiceFile;
+                $claimPdo = new \PDO(
+                    'mysql:host=82.146.42.213;dbname=tg_bot;charset=utf8mb4',
+                    'WizardJIOCb',
+                    '7qQ#28051961',
+                    [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]
+                );
+                $claimService = new \Longman\TelegramBot\Commands\SystemCommands\Services\ClaimService($claimPdo);
+                $pendingClaimsCount = $claimService->getPendingClaimsCount();
+                $claimButtonText = '📋 Рекламации';
+                if ($pendingClaimsCount > 0) {
+                    $claimButtonText .= " ({$pendingClaimsCount})";
+                }
+                $keyboard[] = [
+                    ['text' => $claimButtonText, 'callback_data' => 'claim_menu']
+                ];
+            } else {
+                error_log("ProjectManagementHandler: ClaimService.php not found at: " . $claimServiceFile);
+                $keyboard[] = [
+                    ['text' => '📋 Рекламации', 'callback_data' => 'claim_menu']
+                ];
+            }
+        } catch (\Throwable $e) {
+            error_log("ProjectManagementHandler: Error adding claims button: " . $e->getMessage());
+            $keyboard[] = [
+                ['text' => '📋 Рекламации', 'callback_data' => 'claim_menu']
+            ];
+        }
+        
         $keyboard[] = [
             ['text' => '⬅️ Вернуться в главное меню', 'callback_data' => 'category_Главное']
         ];
@@ -510,8 +544,22 @@ class ProjectManagementHandler implements CallbackHandlerInterface
             error_log("ProjectManagementHandler::showPersonnelStatus - ERROR getting freetime: " . $e->getMessage());
         }
         
-        $vacationCount = 0;  // TODO: implement
-        $sickCount = 0;      // TODO: implement
+        $vacationCount = 0;
+        $sickCount = 0;
+        
+        try {
+            $vacationEmployees = $this->personnelService->getAbsenceEmployees($dbFn, 'Отпуск');
+            $vacationCount = count($vacationEmployees);
+        } catch (\Exception $e) {
+            error_log("ProjectManagementHandler::showPersonnelStatus - ERROR getting vacation: " . $e->getMessage());
+        }
+        
+        try {
+            $sickEmployees = $this->personnelService->getAbsenceEmployees($dbFn, 'Больничный');
+            $sickCount = count($sickEmployees);
+        } catch (\Exception $e) {
+            error_log("ProjectManagementHandler::showPersonnelStatus - ERROR getting sick: " . $e->getMessage());
+        }
         
         $text = "📊 Статистика по направлению: {$fnName}";
         
@@ -586,11 +634,39 @@ class ProjectManagementHandler implements CallbackHandlerInterface
                 $text .= "Всего: " . count($employees);
             }
         } elseif ($status === 'vacation') {
-            $text = "🌴 <b>Отпуск</b>\n{$fnName}\n\n⚠️ <b>Функционал в разработке</b>\n\n" .
-                   "В следующих версиях здесь будет отображаться список сотрудников, находящихся в отпуске.";
+            $employees = $this->personnelService->getAbsenceEmployees($dbFn, 'Отпуск');
+            $title = "🌴 <b>Сотрудники в отпуске</b>\n{$fnName}\n\n";
+            
+            if (empty($employees)) {
+                $text = $title . "На данный момент нет сотрудников в отпуске.";
+            } else {
+                $text = $title;
+                
+                foreach ($employees as $emp) {
+                    $daysWord = $this->personnelService->getDaysWord($emp['days']);
+                    $text .= "🏖 {$emp['fio']}\n";
+                    $text .= "   📅 с {$emp['start_date']} по {$emp['end_date']} ({$emp['days']} {$daysWord})\n\n";
+                }
+                
+                $text .= "Всего: " . count($employees);
+            }
         } else { // sick
-            $text = "🏥 <b>Больничный</b>\n{$fnName}\n\n⚠️ <b>Функционал в разработке</b>\n\n" .
-                   "В следующих версиях здесь будет отображаться список сотрудников, находящихся на больничном.";
+            $employees = $this->personnelService->getAbsenceEmployees($dbFn, 'Больничный');
+            $title = "🏥 <b>Сотрудники на больничном</b>\n{$fnName}\n\n";
+            
+            if (empty($employees)) {
+                $text = $title . "На данный момент нет сотрудников на больничном.";
+            } else {
+                $text = $title;
+                
+                foreach ($employees as $emp) {
+                    $daysWord = $this->personnelService->getDaysWord($emp['days']);
+                    $text .= "🏥 {$emp['fio']}\n";
+                    $text .= "   📅 с {$emp['start_date']} по {$emp['end_date']} ({$emp['days']} {$daysWord})\n\n";
+                }
+                
+                $text .= "Всего: " . count($employees);
+            }
         }
         
         $keyboard = [

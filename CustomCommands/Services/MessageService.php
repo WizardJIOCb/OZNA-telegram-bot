@@ -665,6 +665,27 @@ class MessageService
             ],
             [
                 ['text' => '📊 Текущая деятельность', 'callback_data' => 'category_Табель_Текущая']
+            ],
+            [
+                ['text' => '📋 Отсутствие 🏥🏖', 'callback_data' => 'category_Табель_Отсутствие']
+            ]
+        ];
+    }
+
+    /**
+     * Create absence type selection keyboard (Больничный / Отпуск)
+     */
+    public function createAbsenceTypeKeyboard(): array
+    {
+        return [
+            [
+                ['text' => '🏥 Больничный', 'callback_data' => 'category_Табель_Отсутствие_Больничный']
+            ],
+            [
+                ['text' => '🏖 Отпуск', 'callback_data' => 'category_Табель_Отсутствие_Отпуск']
+            ],
+            [
+                ['text' => '⬅️ Вернуться в табель', 'callback_data' => 'category_Табель']
             ]
         ];
     }
@@ -971,39 +992,64 @@ class MessageService
     /**
      * Create warranty equipment selection keyboard
      */
-    public function createWarrantyEquipmentKeyboard(string $context = 'commissioning'): array
+    public function createWarrantyEquipmentKeyboard(string $context = 'commissioning', array $claims = []): array
     {
         // Determine the correct back button based on context
         $backButtonCallback = $context === 'supervision' 
             ? 'category_Табель_ШМ_Back' 
             : 'category_Табель_Пусконаладка_Back';
             
-        return [
-            [
-                ['text' => '⚡ Электрооборудование', 'callback_data' => 'cat_Гарантии_ЭлектрОб']
-            ],
-            [
-                ['text' => '📎 Средства измерений', 'callback_data' => 'cat_Гарантии_СрИзм']
-            ],
-            [
-                ['text' => '💧 Насосное оборудование', 'callback_data' => 'cat_Гарантии_НасОб']
-            ],
-            [
-                ['text' => '🔧 Трубопроводная арматура', 'callback_data' => 'cat_Гарантии_ТрубАрм']
-            ],
-            [
-                ['text' => '⚙️ Исполнительные механизмы', 'callback_data' => 'cat_Гарантии_ИспМех']
-            ],
-            [
-                ['text' => '💻 Контроллерное оборудование', 'callback_data' => 'cat_Гарантии_КонтрОб']
-            ],
-            [
-                ['text' => '📦 Прочее оборудование', 'callback_data' => 'cat_Гарантии_Прочее']
-            ],
-            [
-                ['text' => '⬅️ Назад', 'callback_data' => $backButtonCallback]
-            ]
+        $keyboard = [];
+        
+        // Insert claim buttons if any
+        foreach ($claims as $claim) {
+            $icon = $claim['status'] === 'pending_moderation' ? '⚠️' : '✅';
+            $subject = $claim['subject'] ?? 'Без темы';
+            if (mb_strlen($subject) > 38) {
+                $subject = mb_substr($subject, 0, 37) . '…';
+            }
+            $keyboard[] = [
+                ['text' => "{$icon} {$subject}", 'callback_data' => 'claim_view_' . $claim['id']]
+            ];
+        }
+        
+        $keyboard[] = [
+            ['text' => '➕ Добавить рекламацию', 'callback_data' => 'claim_ucreate']
         ];
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => $backButtonCallback]
+        ];
+        
+        return $keyboard;
+    }
+
+    /**
+     * Create submenu keyboard for Mobile Brigade warranty works
+     */
+    public function createMobileBrigadeWarrantySubmenuKeyboard(string $tradeBackCallback, array $claims = []): array
+    {
+        $keyboard = [];
+        
+        // Insert claim buttons if any
+        foreach ($claims as $claim) {
+            $icon = $claim['status'] === 'pending_moderation' ? '⚠️' : '✅';
+            $subject = $claim['subject'] ?? 'Без темы';
+            if (mb_strlen($subject) > 38) {
+                $subject = mb_substr($subject, 0, 37) . '…';
+            }
+            $keyboard[] = [
+                ['text' => "{$icon} {$subject}", 'callback_data' => 'claim_view_' . $claim['id']]
+            ];
+        }
+        
+        $keyboard[] = [
+            ['text' => '➕ Добавить рекламацию', 'callback_data' => 'claim_ucreate']
+        ];
+        $keyboard[] = [
+            ['text' => '⬅️ Назад', 'callback_data' => $tradeBackCallback]
+        ];
+        
+        return $keyboard;
     }
 
     /**
@@ -1080,7 +1126,7 @@ class MessageService
                 ['text' => '📏 Метрология', 'callback_data' => 'cat_ТабМетрол']
             ],
             [
-                ['text' => '📊 Режимная наладка', 'callback_data' => 'cat_ТабРежНал']
+                ['text' => '⚙️ ИИ на рабочей среде', 'callback_data' => 'cat_ТабРежНал']
             ],
             [
                 ['text' => '🔄 Комплексное опробование', 'callback_data' => 'cat_ТабКомплОпр']
@@ -1139,7 +1185,7 @@ class MessageService
                 ['text' => '🔄 Комплексное опробование', 'callback_data' => 'category_Табель_КомплОпробование']
             ],
             [
-                ['text' => '📊 Режимная наладка', 'callback_data' => 'category_Табель_РежимнаяНаладка']
+                ['text' => '⚙️ ИИ на рабочей среде', 'callback_data' => 'category_Табель_РежимнаяНаладка']
             ],
             [
                 ['text' => '🚗 Подготовка к служебной поездке', 'callback_data' => 'category_Табель_Подготовка']
@@ -1233,7 +1279,7 @@ class MessageService
     {
         return [
             [
-                ['text' => '🏢 Участие в ЗПИ', 'callback_data' => 'category_Табель_УчастиеВЗПИ']
+                ['text' => '🏢 Участие в ЗПИ', 'callback_data' => 'category_Табель_ЗПИ_Меню']
             ],
             [
                 ['text' => '📝 Разработка программы работ', 'callback_data' => 'category_Табель_РазрПрограммы']
@@ -1296,7 +1342,7 @@ class MessageService
     {
         return [
             [
-                ['text' => '🏢 Участие в ЗПИ', 'callback_data' => 'category_Табель_УчастиеВЗПИ']
+                ['text' => '🏢 Участие в ЗПИ', 'callback_data' => 'category_Табель_ЗПИ_Меню_ШМР']
             ],
             [
                 ['text' => '📝 Разработка программы работ', 'callback_data' => 'category_Табель_РазрПрограммы']
@@ -1321,6 +1367,53 @@ class MessageService
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'category_Табель_ШМ_Back']
+            ]
+        ];
+    }
+
+    /**
+     * Create inline keyboard for ZPI sub-activities (Подактивности ЗПИ) - ПНР context (all 5)
+     * @param string $backCallback Callback for the back button
+     */
+    public function createZPISubActivitiesKeyboard(string $backCallback = 'category_Табель_Пусконаладка_ПроектнаяДеятельность'): array
+    {
+        return [
+            [
+                ['text' => '🔍 Проверка/наладка шкафов', 'callback_data' => 'category_Табель_ЗПИ_ПровШк']
+            ],
+            [
+                ['text' => '⚙️ Настройка/наладка оборудования', 'callback_data' => 'category_Табель_ЗПИ_НастОб']
+            ],
+            [
+                ['text' => '🔬 Функциональная проверка систем', 'callback_data' => 'category_Табель_ЗПИ_ФункПров']
+            ],
+            [
+                ['text' => '🏭 Контроль производства', 'callback_data' => 'category_Табель_ЗПИ_КонтрПр']
+            ],
+            [
+                ['text' => '✅ Комиссионная приёмка', 'callback_data' => 'category_Табель_ЗПИ_КомисПр']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => $backCallback]
+            ]
+        ];
+    }
+
+    /**
+     * Create inline keyboard for ZPI sub-activities - ШМР context (only 2: Контроль производства, Комиссионная приёмка)
+     * @param string $backCallback Callback for the back button
+     */
+    public function createZPISubActivitiesKeyboardSMR(string $backCallback = 'cat_ТабПроектнаяДеят_ШМР'): array
+    {
+        return [
+            [
+                ['text' => '🏭 Контроль производства', 'callback_data' => 'category_Табель_ЗПИ_КонтрПр']
+            ],
+            [
+                ['text' => '✅ Комиссионная приёмка', 'callback_data' => 'category_Табель_ЗПИ_КомисПр']
+            ],
+            [
+                ['text' => '⬅️ Назад', 'callback_data' => $backCallback]
             ]
         ];
     }
@@ -1819,7 +1912,7 @@ class MessageService
      */
     public function createDateSelectionKeyboard(string $prefix = 'category_Табель'): array
     {
-        return [
+        $keyboard = [
             [
                 ['text' => '📅 Сегодня', 'callback_data' => "{$prefix}_Сегодня"]
             ],
@@ -1828,11 +1921,17 @@ class MessageService
             ],
             [
                 ['text' => '📆 Позавчера', 'callback_data' => "{$prefix}_Позавчера"]
-            ],
-            [
-                ['text' => '📆 Другая дата', 'callback_data' => "{$prefix}_ДругаяДата"]
             ]
         ];
+
+        // Check if "Другая дата" option is enabled in tabel settings
+        if (\Longman\TelegramBot\Commands\SystemCommands\Handlers\TabelManagerHandler::isOtherDateEnabled()) {
+            $keyboard[] = [
+                ['text' => '📆 Другая дата', 'callback_data' => "{$prefix}_ДругаяДата"]
+            ];
+        }
+
+        return $keyboard;
     }
 
     /**
@@ -2128,6 +2227,9 @@ class MessageService
                 ['text' => '📝 Прочее', 'callback_data' => 'cat_ШМР_ТехОб_Проч_РабГр']
             ],
             [
+                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ТехОб_ПодтВех']
+            ],
+            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ВнутрМонт']
             ]
         ];
@@ -2144,9 +2246,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_МонтТруб_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_МонтТруб_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ТехОб']
@@ -2167,9 +2266,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ГидрИсп_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ГидрИсп_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ТехОб']
             ]
         ];
@@ -2186,9 +2282,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_МонтТехОб_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_МонтТехОб_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ТехОб']
@@ -2209,9 +2302,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_МонтЗРА_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_МонтЗРА_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ТехОб']
             ]
         ];
@@ -2230,9 +2320,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ПротСоед_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ПротСоед_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ТехОб']
             ]
         ];
@@ -2249,9 +2336,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_МонтТеплИзол_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_МонтТеплИзол_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ТехОб']
@@ -2296,6 +2380,9 @@ class MessageService
                 ['text' => '📝 Прочее', 'callback_data' => 'cat_ШМР_ОтоплВент_Проч']
             ],
             [
+                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_ПодтВех']
+            ],
+            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ВнутрМонт']
             ]
         ];
@@ -2312,9 +2399,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтОб_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтОб_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
@@ -2335,9 +2419,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтВозд_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтВозд_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
             ]
         ];
@@ -2354,9 +2435,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтКонд_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтКонд_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
@@ -2377,9 +2455,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтИТП_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтИТП_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
             ]
         ];
@@ -2396,9 +2471,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_ПневмГидр_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_ПневмГидр_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
@@ -2419,9 +2491,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтКНС_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_МонтКНС_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
             ]
         ];
@@ -2438,9 +2507,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_ПроклКб_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_ПроклКб_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
@@ -2461,9 +2527,6 @@ class MessageService
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_ПодклКб_НеучВОР']
             ],
             [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_ПодклКб_ПодтВех']
-            ],
-            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
             ]
         ];
@@ -2480,9 +2543,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => 'cat_ШМР_ОтоплВент_МаркОб_НеучВОР']
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОтоплВент_МаркОб_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ОтоплВент']
@@ -2515,6 +2575,9 @@ class MessageService
                 ['text' => '📝 Прочее', 'callback_data' => 'cat_ШМР_ЭлОб_Проч']
             ],
             [
+                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ЭлОб_ПодтВех']
+            ],
+            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ВнутрМонт']
             ]
         ];
@@ -2543,6 +2606,9 @@ class MessageService
             ],
             [
                 ['text' => '📝 Прочее', 'callback_data' => 'cat_ШМР_ПожСигн_Проч']
+            ],
+            [
+                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ПожСигн_ПодтВех']
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ВнутрМонт']
@@ -2575,6 +2641,9 @@ class MessageService
                 ['text' => '📝 Прочее', 'callback_data' => 'cat_ШМР_ОхрСигн_Проч']
             ],
             [
+                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_ОхрСигн_ПодтВех']
+            ],
+            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ВнутрМонт']
             ]
         ];
@@ -2605,6 +2674,9 @@ class MessageService
                 ['text' => '📝 Прочее', 'callback_data' => 'cat_ШМР_Автом_Проч']
             ],
             [
+                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => 'cat_ШМР_Автом_ПодтВех']
+            ],
+            [
                 ['text' => '⬅️ Назад', 'callback_data' => 'cat_ШМР_ВнутрМонт']
             ]
         ];
@@ -2624,9 +2696,6 @@ class MessageService
             ],
             [
                 ['text' => '📄 Работы неучтенные в ВОР', 'callback_data' => "cat_ШМР_{$equipmentType}_{$activityType}_НеучВОР"]
-            ],
-            [
-                ['text' => '✅ Подтвердить достижение вехи', 'callback_data' => "cat_ШМР_{$equipmentType}_{$activityType}_ПодтВех"]
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => $backCallback]
