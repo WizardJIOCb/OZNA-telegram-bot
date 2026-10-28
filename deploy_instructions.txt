@@ -1,0 +1,25 @@
+Деплой изменений: инфо-панель вехи на шаге 6, пропуск опроса при 100%, ПодтВех -> 100%
+=========================================================================================
+
+Миграция БД уже выполнена (fix_confirmed_milestones.php) — повторно запускать НЕ нужно.
+
+Файлы для копирования на сервер (/var/www/api.ladyzenko.pro/tg/ozna/):
+
+  1. pwa_frontend.b64                                  → корень проекта
+  2. api/controllers/TabelController.php               → api/controllers/
+  3. CustomCommands/Services/MilestoneProgressService.php → CustomCommands/Services/
+  4. CustomCommands/Services/TabelEntry.php             → CustomCommands/Services/
+
+Деплой:
+
+  bash deploy.sh
+
+Или вручную:
+
+  # Фронтенд
+  cat pwa_frontend.b64 | base64 -d | tar -xzf - -C app/
+
+  # PHP
+  cp api/controllers/TabelController.php /var/www/api.ladyzenko.pro/tg/ozna/api/controllers/
+  cp CustomCommands/Services/MilestoneProgressService.php /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/
+  cp CustomCommands/Services/TabelEntry.php /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Services/

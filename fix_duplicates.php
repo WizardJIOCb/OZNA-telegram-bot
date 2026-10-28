@@ -1,38 +1,72 @@
 <?php
-// Remove all duplicate functions after line 7890
+$config = require __DIR__ . '/api/config.php';
+$db = new mysqli($config['db']['host'], $config['db']['username'], $config['db']['password'], $config['db']['database']);
+$db->set_charset('utf8mb4');
 
-$file_path = __DIR__ . '/CustomCommands/Handlers/ProjectHandler.php';
-$lines = file($file_path);
+// Find ALL duplicate "ИИ на рабочей среде" rows across all projects
+$result = $db->query("
+    SELECT project_code, milestone_name, work_type, COUNT(*) as cnt
+    FROM project_milestones
+    WHERE milestone_name = 'ИИ на рабочей среде' AND work_type = 'ПНР'
+    GROUP BY project_code, milestone_name, work_type
+    HAVING cnt > 1
+");
 
-echo "Original: " . count($lines) . " lines\n";
+echo "=== Projects with duplicate 'ИИ на рабочей среде' ===\n";
+$duplicates = [];
+while ($row = $result->fetch_assoc()) {
+    echo $row['project_code'] . " - " . $row['cnt'] . " rows\n";
+    $duplicates[] = $row['project_code'];
+}
 
-// Keep everything up to line 7890, then skip to where unique functions start again
-// Find where duplicates end by searching for a unique function
+if (empty($duplicates)) {
+    echo "No duplicates found.\n";
+}
 
-// Find first occurrence of handleProjectCodeInput (it should be unique)
-$unique_start = null;
-for ($i = 7890; $i < count($lines); $i++) {
-    if (strpos($lines[$i], 'private function handleProjectCodeInput') !== false) {
-        // Go back to find the comment block
-        for ($j = $i - 1; $j >= 0; $j--) {
-            if (trim($lines[$j]) === '/**') {
-                $unique_start = $j;
-                break 2;
-            }
-        }
+// Show details for each duplicate
+foreach ($duplicates as $code) {
+    echo "\n--- $code ---\n";
+    $stmt = $db->prepare("
+        SELECT id, milestone_name, planned_hours, unit, is_not_applicable, order_index
+        FROM project_milestones
+        WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = 'ИИ на рабочей среде'
+        ORDER BY id
+    ");
+    $stmt->bind_param('s', $code);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) {
+        echo "  id={$r['id']} | plan=" . ($r['planned_hours'] ?? 'NULL') . " | unit={$r['unit']} | na={$r['is_not_applicable']} | order={$r['order_index']}\n";
+    }
+    $stmt->close();
+}
+
+// Fix: for each duplicate, keep the one with planned_hours set (or the first one), delete the other
+echo "\n=== Fixing duplicates ===\n";
+foreach ($duplicates as $code) {
+    $stmt = $db->prepare("
+        SELECT id, planned_hours
+        FROM project_milestones
+        WHERE project_code = ? AND work_type = 'ПНР' AND milestone_name = 'ИИ на рабочей среде'
+        ORDER BY CASE WHEN planned_hours IS NOT NULL THEN 0 ELSE 1 END, id
+    ");
+    $stmt->bind_param('s', $code);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $rows = [];
+    while ($r = $res->fetch_assoc()) {
+        $rows[] = $r;
+    }
+    $stmt->close();
+
+    // Keep the first (has plan data), delete the rest
+    $keepId = $rows[0]['id'];
+    for ($i = 1; $i < count($rows); $i++) {
+        $deleteId = $rows[$i]['id'];
+        $db->query("DELETE FROM project_milestones WHERE id = $deleteId");
+        echo "  $code: deleted id=$deleteId (plan=" . ($rows[$i]['planned_hours'] ?? 'NULL') . "), kept id=$keepId (plan=" . ($rows[0]['planned_hours'] ?? 'NULL') . ")\n";
     }
 }
 
-if ($unique_start) {
-    echo "Found unique functions starting at line: " . ($unique_start + 1) . "\n";
-    $new_lines = array_merge(
-        array_slice($lines, 0, 7890),
-        array_slice($lines, $unique_start)
-    );
-    
-    file_put_contents($file_path, implode('', $new_lines));
-    echo "Fixed! New file: " . count($new_lines) . " lines\n";
-    echo "Removed: " . (count($lines) - count($new_lines)) . " duplicate lines\n";
-} else {
-    echo "ERROR: Could not find unique function start!\n";
-}
+echo "\nDone.\n";
+$db->close();

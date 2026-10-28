@@ -33,8 +33,8 @@ class ProjectCardService
         
         // Main info header
         fputcsv($file, ['=== ОСНОВНАЯ ИНФОРМАЦИЯ ==='], ';');
-        fputcsv($file, ['Шифр проекта', 'Наименование проекта', 'Заказчик', 'БН', 'ШМР План (часы)', 'ПНР План (часы)'], ';');
-        fputcsv($file, ['ОИ999', 'Пример проекта', 'Водоканал СПб', 'АСН', '240', '160'], ';');
+        fputcsv($file, ['Шифр проекта', 'Наименование проекта', 'Заказчик', 'БН', 'ШМР План (часы)', 'ПНР План (часы)', 'ШМР План дата заверш.', 'ПНР План дата заверш.'], ';');
+        fputcsv($file, ['ОИ999', 'Пример проекта', 'Водоканал СПб', 'АСН', '240', '160', '31.12.2026', '28.02.2027'], ';');
         fputcsv($file, [], ';');
         
         // SMR milestones header
@@ -105,7 +105,7 @@ class ProjectCardService
                     continue;
                 }
                 
-                if ($currentSection === 'main' && !$mainInfo && count($row) >= 6) {
+                if ($currentSection === 'main' && !$mainInfo && count($row) >= 4) {
                     $mainInfo = $row;
                 } elseif ($currentSection === 'smr' && count($row) >= 3) {
                     $smrMilestones[] = $row;
@@ -126,6 +126,8 @@ class ProjectCardService
             $businessUnitName = trim($mainInfo[3] ?? '');
             $smrPlannedHours = floatval($mainInfo[4] ?? 0);
             $pnrPlannedHours = floatval($mainInfo[5] ?? 0);
+            $smrPlannedCompletion = trim($mainInfo[6] ?? '');
+            $pnrPlannedCompletion = trim($mainInfo[7] ?? '');
             
             // Validation
             if (empty($projectCode)) {
@@ -166,7 +168,9 @@ class ProjectCardService
                 $businessUnitId,
                 $smrPlannedHours,
                 $pnrPlannedHours,
-                $userId
+                $userId,
+                $smrPlannedCompletion,
+                $pnrPlannedCompletion
             );
             
             if (!$cardCreated) {
@@ -210,7 +214,13 @@ class ProjectCardService
             $result['message'] = "✅ Карточка проекта '{$projectCode}' успешно создана!\n\n";
             $result['message'] .= "📊 Загружено вех:\n";
             $result['message'] .= "  • ШМР: {$smrCount}\n";
-            $result['message'] .= "  • ПНР: {$pnrCount}";
+            $result['message'] .= "  • ПНР: {$pnrCount}\n";
+            if (!empty($smrPlannedCompletion)) {
+                $result['message'] .= "\n📅 План завершения ШМР: {$smrPlannedCompletion}";
+            }
+            if (!empty($pnrPlannedCompletion)) {
+                $result['message'] .= "\n📅 План завершения ПНР: {$pnrPlannedCompletion}";
+            }
             
             return $result;
             
@@ -283,14 +293,20 @@ class ProjectCardService
         ?int $businessUnitId,
         float $smrPlannedHours,
         float $pnrPlannedHours,
-        int $userId
+        int $userId,
+        string $smrPlannedCompletion = '',
+        string $pnrPlannedCompletion = ''
     ): bool {
         $pdo = $this->databaseService->getPdo();
         
+        // Parse dates (dd.mm.yyyy -> yyyy-mm-dd)
+        $smrDate = $this->parseDateToSql($smrPlannedCompletion);
+        $pnrDate = $this->parseDateToSql($pnrPlannedCompletion);
+        
         $stmt = $pdo->prepare("
             INSERT INTO project_cards 
-            (project_code, project_name, customer_id, business_unit_id, smr_planned_hours, pnr_planned_hours, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (project_code, project_name, customer_id, business_unit_id, smr_planned_hours, pnr_planned_hours, created_by, smr_planned_completion, pnr_planned_completion)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         
         return $stmt->execute([
@@ -300,8 +316,21 @@ class ProjectCardService
             $businessUnitId,
             $smrPlannedHours,
             $pnrPlannedHours,
-            $userId
+            $userId,
+            $smrDate,
+            $pnrDate
         ]);
+    }
+
+    /**
+     * Parse date from dd.mm.yyyy to yyyy-mm-dd for SQL, returns null if invalid
+     */
+    private function parseDateToSql(string $dateStr): ?string
+    {
+        if (empty($dateStr)) return null;
+        $dt = \DateTime::createFromFormat('d.m.Y', $dateStr);
+        if (!$dt) return null;
+        return $dt->format('Y-m-d');
     }
 
     /**

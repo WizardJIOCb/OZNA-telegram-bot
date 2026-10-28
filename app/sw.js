@@ -1,7 +1,5 @@
-const CACHE_NAME = 'ozna-pwa-v3';
+const CACHE_NAME = 'ozna-pwa-v17';
 const STATIC_ASSETS = [
-  '/tg/ozna/app/',
-  '/tg/ozna/app/index.html',
   '/tg/ozna/app/manifest.json',
 ];
 
@@ -24,8 +22,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Skip API requests - let them go through network
-  if (url.pathname.includes('/api')) return;
+  // API requests - bypass HTTP cache entirely
+  if (url.pathname.includes('/api')) {
+    event.respondWith(fetch(event.request, { cache: 'no-store' }));
+    return;
+  }
 
   // Network-first for HTML and navigation (picks up new asset references on deploy)
   if (event.request.mode === 'navigate' || url.pathname.endsWith('.html')) {

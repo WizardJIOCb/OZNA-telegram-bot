@@ -241,6 +241,20 @@ class CallbackHandlerFactory
             return $category;
         }
         
+        // Handle admin project list pagination callbacks (proj_admin_list_page_ prefix)
+        if (strpos($callbackData, 'proj_admin_list_page_') === 0) {
+            $category = $callbackData;
+            error_log("CallbackHandlerFactory extracted admin project list pagination category: '{$category}' from callback data: '{$callbackData}'");
+            return $category;
+        }
+        
+        // Handle delete project list pagination callbacks (proj_delete_list_page_ prefix)
+        if (strpos($callbackData, 'proj_delete_list_page_') === 0) {
+            $category = $callbackData;
+            error_log("CallbackHandlerFactory extracted delete project list pagination category: '{$category}' from callback data: '{$callbackData}'");
+            return $category;
+        }
+        
         // Handle project moderation callbacks (proj_mod_ prefix)
         if (strpos($callbackData, 'proj_mod_') === 0) {
             $category = $callbackData; // Return the full callback data as category

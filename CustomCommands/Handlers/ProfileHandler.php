@@ -73,6 +73,11 @@ class ProfileHandler implements CallbackHandlerInterface
             $canHandle = strpos($callbackData, 'pwa_') === 0;
         }
         
+        // Проверяем callback'и, связанные со сбросом пароля пользователя (суперадмин)
+        if (!$canHandle) {
+            $canHandle = strpos($callbackData, 'admin_rst_pwd') === 0;
+        }
+        
         error_log("ProfileHandler: canHandle result for '{$callbackData}': " . ($canHandle ? 'true' : 'false'));
         error_log("ProfileHandler: starts with category_Профиль: " . (strpos($callbackData, 'category_Профиль') === 0 ? 'true' : 'false'));
         return $canHandle;
@@ -206,6 +211,27 @@ class ProfileHandler implements CallbackHandlerInterface
             return $this->handleResetPassword($chatId, $userId);
         }
 
+        // Сброс пароля пользователя (суперадмин)
+        if ($callbackData === 'admin_rst_pwd') {
+            return $this->showAdminResetPasswordUserList($chatId, $userId, 0);
+        }
+        if (strpos($callbackData, 'admin_rst_pwd_p_') === 0) {
+            $page = (int) substr($callbackData, strlen('admin_rst_pwd_p_'));
+            return $this->showAdminResetPasswordUserList($chatId, $userId, $page);
+        }
+        if (strpos($callbackData, 'admin_rst_pwd_u_') === 0) {
+            $targetTgId = (int) substr($callbackData, strlen('admin_rst_pwd_u_'));
+            return $this->showAdminResetPasswordUserDetail($chatId, $userId, $targetTgId);
+        }
+        if (strpos($callbackData, 'admin_rst_pwd_gen_') === 0) {
+            $targetTgId = (int) substr($callbackData, strlen('admin_rst_pwd_gen_'));
+            return $this->adminGeneratePassword($chatId, $userId, $targetTgId);
+        }
+        if (strpos($callbackData, 'admin_rst_pwd_inp_') === 0) {
+            $targetTgId = (int) substr($callbackData, strlen('admin_rst_pwd_inp_'));
+            return $this->adminPromptCustomPassword($chatId, $userId, $targetTgId, $conversation);
+        }
+
         // Обработка основной категории Профиль
         if ($category === 'Профиль' || $callbackData === 'category_Профиль') {
             error_log("ProfileHandler showing profile for user: {$userId}");
@@ -266,6 +292,13 @@ class ProfileHandler implements CallbackHandlerInterface
         if ($accessLevel >= 1) {
             $keyboard[] = [
                 ['text' => '🌐 Внешнее подключение', 'callback_data' => 'pwa_menu']
+            ];
+        }
+        
+        // Кнопка сброса пароля пользователя - только для суперадминистраторов (уровень 4)
+        if ($accessLevel >= DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            $keyboard[] = [
+                ['text' => '🔑 Сброс пароля пользователя', 'callback_data' => 'admin_rst_pwd']
             ];
         }
         
@@ -741,6 +774,271 @@ class ProfileHandler implements CallbackHandlerInterface
             '<b>Логин:</b> <code>' . htmlspecialchars($username) . '</code>' . PHP_EOL .
             '<b>Новый пароль:</b> <code>' . $pwd . '</code>' . PHP_EOL . PHP_EOL .
             '⚠️ Запомните или запишите пароль! Он показывается только один раз.',
+            $keyboard
+        );
+    }
+
+    // ==========================================
+    // Сброс пароля пользователя (Суперадмин)
+    // ==========================================
+
+    /**
+     * Show list of PWA users for password reset (superadmin only)
+     */
+    private function showAdminResetPasswordUserList(string $chatId, int $adminUserId, int $page = 0): ServerResponse
+    {
+        // Verify superadmin access
+        $accessLevel = $this->adminService->getUserAccessLevel($adminUserId);
+        if ($accessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Доступ запрещен.</b> Только для суперадминистраторов.');
+        }
+
+        $db = $this->databaseService->getConnection();
+        $perPage = 8;
+        $offset = $page * $perPage;
+
+        // Count total
+        $countResult = $db->query("SELECT COUNT(*) as cnt FROM pwa_users WHERE is_active = 1");
+        $total = $countResult ? (int) $countResult->fetch_assoc()['cnt'] : 0;
+
+        if ($total === 0) {
+            $keyboard = [
+                [['text' => '⬅️ Назад', 'callback_data' => 'category_Профиль']]
+            ];
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>🔑 Сброс пароля пользователя</b>' . PHP_EOL . PHP_EOL .
+                'Нет пользователей с веб-доступом.',
+                $keyboard
+            );
+        }
+
+        $stmt = $db->prepare(
+            "SELECT id, username, fio, linked_telegram_id FROM pwa_users WHERE is_active = 1 ORDER BY fio ASC, username ASC LIMIT ? OFFSET ?"
+        );
+        $stmt->bind_param('ii', $perPage, $offset);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $users = [];
+        while ($row = $result->fetch_assoc()) {
+            $users[] = $row;
+        }
+        $stmt->close();
+
+        $totalPages = (int) ceil($total / $perPage);
+        $text = '<b>🔑 Сброс пароля пользователя</b>' . PHP_EOL . PHP_EOL .
+            'Выберите пользователя для сброса пароля:' . PHP_EOL .
+            '<i>Страница ' . ($page + 1) . ' из ' . $totalPages . ' (всего: ' . $total . ')</i>';
+
+        $keyboard = [];
+        foreach ($users as $u) {
+            $displayName = $u['fio'] ?: $u['username'];
+            $tgId = (int) $u['linked_telegram_id'];
+            $keyboard[] = [
+                ['text' => $displayName, 'callback_data' => 'admin_rst_pwd_u_' . $tgId]
+            ];
+        }
+
+        // Pagination
+        $navRow = [];
+        if ($page > 0) {
+            $navRow[] = ['text' => '⬅️ Назад', 'callback_data' => 'admin_rst_pwd_p_' . ($page - 1)];
+        }
+        if ($page < $totalPages - 1) {
+            $navRow[] = ['text' => '➡️ Далее', 'callback_data' => 'admin_rst_pwd_p_' . ($page + 1)];
+        }
+        if (!empty($navRow)) {
+            $keyboard[] = $navRow;
+        }
+
+        $keyboard[] = [
+            ['text' => '⬅️ К профилю', 'callback_data' => 'category_Профиль']
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Show user detail before password reset (superadmin only)
+     */
+    private function showAdminResetPasswordUserDetail(string $chatId, int $adminUserId, int $targetTgId): ServerResponse
+    {
+        $accessLevel = $this->adminService->getUserAccessLevel($adminUserId);
+        if ($accessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Доступ запрещен.</b>');
+        }
+
+        $db = $this->databaseService->getConnection();
+        $stmt = $db->prepare("SELECT username, fio FROM pwa_users WHERE linked_telegram_id = ? AND is_active = 1");
+        $stmt->bind_param('i', $targetTgId);
+        $stmt->execute();
+        $pwaUser = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$pwaUser) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Пользователь не найден.</b>');
+        }
+
+        $text = '<b>🔑 Сброс пароля</b>' . PHP_EOL . PHP_EOL .
+            '<b>Пользователь:</b> ' . htmlspecialchars($pwaUser['fio'] ?: $pwaUser['username']) . PHP_EOL .
+            '<b>Логин:</b> <code>' . htmlspecialchars($pwaUser['username']) . '</code>' . PHP_EOL . PHP_EOL .
+            'Выберите способ сброса пароля:';
+
+        $keyboard = [
+            [
+                ['text' => '🎲 Сгенерировать временный пароль', 'callback_data' => 'admin_rst_pwd_gen_' . $targetTgId]
+            ],
+            [
+                ['text' => '✏️ Ввести пароль вручную', 'callback_data' => 'admin_rst_pwd_inp_' . $targetTgId]
+            ],
+            [
+                ['text' => '⬅️ К списку', 'callback_data' => 'admin_rst_pwd']
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Generate a random temp password for user (superadmin only)
+     */
+    private function adminGeneratePassword(string $chatId, int $adminUserId, int $targetTgId): ServerResponse
+    {
+        $accessLevel = $this->adminService->getUserAccessLevel($adminUserId);
+        if ($accessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Доступ запрещен.</b>');
+        }
+
+        $db = $this->databaseService->getConnection();
+
+        // Get user info
+        $stmt = $db->prepare("SELECT username, fio FROM pwa_users WHERE linked_telegram_id = ? AND is_active = 1");
+        $stmt->bind_param('i', $targetTgId);
+        $stmt->execute();
+        $pwaUser = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$pwaUser) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Пользователь не найден.</b>');
+        }
+
+        // Generate temp password
+        $upper  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $lower  = 'abcdefghjkmnpqrstuvwxyz';
+        $digits = '23456789';
+        $all    = $upper . $lower . $digits;
+        $pwd  = $upper[random_int(0, strlen($upper) - 1)];
+        $pwd .= $lower[random_int(0, strlen($lower) - 1)];
+        $pwd .= $digits[random_int(0, strlen($digits) - 1)];
+        for ($i = 3; $i < 10; $i++) {
+            $pwd .= $all[random_int(0, strlen($all) - 1)];
+        }
+        $pwd = str_shuffle($pwd);
+
+        $hash = password_hash($pwd, PASSWORD_BCRYPT, ['cost' => 12]);
+
+        $stmt2 = $db->prepare("UPDATE pwa_users SET password_hash = ? WHERE linked_telegram_id = ?");
+        $stmt2->bind_param('si', $hash, $targetTgId);
+        $stmt2->execute();
+        $affected = $stmt2->affected_rows;
+        $stmt2->close();
+
+        if ($affected === 0) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Ошибка при сбросе пароля.</b>');
+        }
+
+        error_log("Admin {$adminUserId} reset password for user TG:{$targetTgId} ({$pwaUser['fio']})");
+
+        $keyboard = [
+            [['text' => '⬅️ К списку пользователей', 'callback_data' => 'admin_rst_pwd']],
+            [['text' => '⬅️ К профилю', 'callback_data' => 'category_Профиль']]
+        ];
+
+        return $this->messageService->sendMessage(
+            $chatId,
+            '<b>✅ Пароль сброшен!</b>' . PHP_EOL . PHP_EOL .
+            '<b>Пользователь:</b> ' . htmlspecialchars($pwaUser['fio'] ?: $pwaUser['username']) . PHP_EOL .
+            '<b>Логин:</b> <code>' . htmlspecialchars($pwaUser['username']) . '</code>' . PHP_EOL .
+            '<b>Временный пароль:</b> <code>' . $pwd . '</code>' . PHP_EOL . PHP_EOL .
+            '⚠️ Передайте эти данные пользователю. Пароль показывается только один раз.' . PHP_EOL .
+            'Рекомендуйте пользователю сменить пароль при первом входе.',
+            $keyboard
+        );
+    }
+
+    /**
+     * Prompt superadmin to enter custom password for user
+     */
+    private function adminPromptCustomPassword(string $chatId, int $adminUserId, int $targetTgId, Conversation $conversation): ServerResponse
+    {
+        $accessLevel = $this->adminService->getUserAccessLevel($adminUserId);
+        if ($accessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Доступ запрещен.</b>');
+        }
+
+        $conversation->notes['awaiting_admin_reset_pwd'] = true;
+        $conversation->notes['admin_reset_pwd_target'] = $targetTgId;
+        $conversation->update();
+
+        return $this->messageService->sendMessage(
+            $chatId,
+            '<b>✏️ Введите временный пароль</b>' . PHP_EOL . PHP_EOL .
+            'Введите новый временный пароль для пользователя (минимум 6 символов):'
+        );
+    }
+
+    /**
+     * Handle custom password input from superadmin
+     */
+    public function handleAdminResetPasswordInput(string $password, int $adminUserId, int $targetTgId, string $chatId): ServerResponse
+    {
+        $accessLevel = $this->adminService->getUserAccessLevel($adminUserId);
+        if ($accessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Доступ запрещен.</b>');
+        }
+
+        if (mb_strlen($password) < 6) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                '<b>❌ Пароль слишком короткий!</b>' . PHP_EOL .
+                'Минимум 6 символов. Попробуйте ещё раз:'
+            );
+        }
+
+        $db = $this->databaseService->getConnection();
+
+        $stmt = $db->prepare("SELECT username, fio FROM pwa_users WHERE linked_telegram_id = ? AND is_active = 1");
+        $stmt->bind_param('i', $targetTgId);
+        $stmt->execute();
+        $pwaUser = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$pwaUser) {
+            return $this->messageService->sendMessage($chatId, '<b>❌ Пользователь не найден.</b>');
+        }
+
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+
+        $stmt2 = $db->prepare("UPDATE pwa_users SET password_hash = ? WHERE linked_telegram_id = ?");
+        $stmt2->bind_param('si', $hash, $targetTgId);
+        $stmt2->execute();
+        $stmt2->close();
+
+        error_log("Admin {$adminUserId} set custom password for user TG:{$targetTgId} ({$pwaUser['fio']})");
+
+        $keyboard = [
+            [['text' => '⬅️ К списку пользователей', 'callback_data' => 'admin_rst_pwd']],
+            [['text' => '⬅️ К профилю', 'callback_data' => 'category_Профиль']]
+        ];
+
+        return $this->messageService->sendMessage(
+            $chatId,
+            '<b>✅ Пароль установлен!</b>' . PHP_EOL . PHP_EOL .
+            '<b>Пользователь:</b> ' . htmlspecialchars($pwaUser['fio'] ?: $pwaUser['username']) . PHP_EOL .
+            '<b>Логин:</b> <code>' . htmlspecialchars($pwaUser['username']) . '</code>' . PHP_EOL .
+            '<b>Пароль:</b> <code>' . htmlspecialchars($password) . '</code>' . PHP_EOL . PHP_EOL .
+            '⚠️ Передайте эти данные пользователю. Пароль показывается только один раз.' . PHP_EOL .
+            'Рекомендуйте пользователю сменить пароль при первом входе.',
             $keyboard
         );
     }

@@ -26,6 +26,30 @@ const router = createRouter({
       component: () => import('../views/TabelView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/map',
+      name: 'map',
+      component: () => import('../views/MapView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/metrics',
+      name: 'metrics',
+      component: () => import('../views/MetricsView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/dashboard',
+      name: 'dashboard',
+      component: () => import('../views/DashboardView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/admin/users',
+      name: 'admin-users',
+      component: () => import('../views/AdminUsersView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

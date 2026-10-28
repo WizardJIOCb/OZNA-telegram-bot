@@ -1,7 +1,5 @@
-const CACHE_NAME = 'ozna-pwa-v3';
+const CACHE_NAME = 'ozna-pwa-v14';
 const STATIC_ASSETS = [
-  '/tg/ozna/app/',
-  '/tg/ozna/app/index.html',
   '/tg/ozna/app/manifest.json',
 ];
 

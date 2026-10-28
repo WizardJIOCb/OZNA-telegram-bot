@@ -41,16 +41,16 @@
 
     <!-- ABSENCE FLOW: Step 3a - date range -->
     <div v-if="step === 3 && isAbsenceFlow" class="step">
-      <h2>Укажите период</h2>
+      <h2>{{ isSingleDateAbsence ? 'Укажите дату' : 'Укажите период' }}</h2>
       <div class="field">
-        <label>Дата начала</label>
+        <label>{{ isSingleDateAbsence ? 'Дата' : 'Дата начала' }}</label>
         <input type="date" v-model="absenceStartDate" />
       </div>
-      <div class="field">
+      <div v-if="!isSingleDateAbsence" class="field">
         <label>Дата окончания</label>
         <input type="date" v-model="absenceEndDate" />
       </div>
-      <div v-if="absenceDayCount > 0" class="info-text">
+      <div v-if="!isSingleDateAbsence && absenceDayCount > 0" class="info-text">
         {{ absenceDayCount }} дн.
       </div>
       <div v-if="absenceDateError" class="error">{{ absenceDateError }}</div>
@@ -72,7 +72,8 @@
         </div>
         <div class="confirm-row">
           <span class="label">Период</span>
-          <span class="value">{{ absenceStartFormatted }} — {{ absenceEndFormatted }} ({{ absenceDayCount }} дн.)</span>
+          <span class="value" v-if="isSingleDateAbsence">{{ absenceStartFormatted }}</span>
+          <span class="value" v-else>{{ absenceStartFormatted }} — {{ absenceEndFormatted }} ({{ absenceDayCount }} дн.)</span>
         </div>
       </div>
 
@@ -312,7 +313,7 @@
         <template v-if="milestoneSurveyLoading">
           <div class="loading">Проверка вехи...</div>
         </template>
-        <template v-else-if="milestoneSurvey?.needs_survey && !milestoneSurveyDone">
+        <template v-else-if="milestoneSurvey?.needs_survey && !milestoneSurveyDone && milestoneSurvey.previous_percent < 100">
           <h2>Оценка выполнения вехи</h2>
           <div class="confirm-card">
             <div class="confirm-row">
@@ -399,6 +400,7 @@
             Запись о завершении вехи создана автоматически
           </p>
           <!-- Continue to regular details -->
+          <template v-if="!isMilestoneConfirmation">
           <h2 v-if="needsCustomInput">Дополнительная информация</h2>
           <h2 v-else>Укажите детали</h2>
 
@@ -415,6 +417,15 @@
           <button class="btn-primary" @click="goToConfirm" :disabled="!canProceed">
             Далее
           </button>
+          </template>
+          <template v-else>
+          <div class="milestone-confirm-notice" style="margin-top: 12px">
+            Подтверждение вехи означает завершение всех работ по данному этапу.
+          </div>
+          <button class="btn-primary" @click="goToConfirm">
+            Подтвердить завершение этапа
+          </button>
+          </template>
           <div class="step-footer">
             <button class="btn-secondary" @click="handleBack">&larr; Назад</button>
           </div>
@@ -422,37 +433,43 @@
 
         <!-- REGULAR DETAILS (no survey needed) -->
         <template v-else>
-          <!-- Milestone info panel (when milestone data available but no survey) -->
-          <div v-if="milestoneSurvey?.milestone_name" class="milestone-info-panel" style="margin-bottom: 16px;">
-            <div class="milestone-info-header">Справка по вехе: {{ milestoneSurvey.milestone_name }}</div>
-            <div class="milestone-info-row">
-              <span class="milestone-info-label">Прогресс вехи</span>
-              <span class="milestone-info-value">{{ milestoneSurvey.previous_percent }}%</span>
+          <!-- MILESTONE CONFIRMATION: no hours, show warning -->
+          <template v-if="isMilestoneConfirmation">
+            <div class="milestone-confirm-warning">
+              <h2>Подтверждение вехи</h2>
+              <div class="confirm-card">
+                <div class="confirm-row">
+                  <span class="label">Проект</span>
+                  <span class="value">{{ entry.project_code }}</span>
+                </div>
+                <div class="confirm-row">
+                  <span class="label">Работа</span>
+                  <span class="value">{{ selectedActivityLabel }}</span>
+                </div>
+              </div>
+              <div class="milestone-confirm-notice">
+                Подтверждение вехи означает завершение всех работ по данному этапу. После подтверждения прогресс будет установлен на 100%.
+              </div>
             </div>
-            <div class="milestone-info-row">
-              <span class="milestone-info-label">Эффективность вехи</span>
-              <span class="milestone-info-value" v-if="milestoneSurvey.efficiency !== null"
-                :style="{ color: milestoneSurvey.efficiency >= 100 ? 'var(--success)' : milestoneSurvey.efficiency >= 80 ? '#e6a700' : 'var(--error)' }">
-                {{ milestoneSurvey.efficiency }}%
-              </span>
-              <span class="milestone-info-value milestone-info-nodata" v-else>нет данных</span>
+            <button class="btn-primary" @click="goToConfirm">
+              Подтвердить завершение этапа
+            </button>
+            <div class="step-footer">
+              <button class="btn-secondary" @click="handleBack">&larr; Назад</button>
             </div>
-            <div class="milestone-info-row">
-              <span class="milestone-info-label">Эффективность {{ milestoneSurvey.work_type }}</span>
-              <span class="milestone-info-value" v-if="milestoneSurvey.total_efficiency !== null"
-                :style="{ color: milestoneSurvey.total_efficiency >= 100 ? 'var(--success)' : milestoneSurvey.total_efficiency >= 80 ? '#e6a700' : 'var(--error)' }">
-                {{ milestoneSurvey.total_efficiency }}%
-              </span>
-              <span class="milestone-info-value milestone-info-nodata" v-else>нет данных</span>
-            </div>
-            <div v-if="milestoneSurvey.previous_estimator" class="milestone-info-row">
-              <span class="milestone-info-label">Последняя оценка</span>
-              <span class="milestone-info-value">{{ milestoneSurvey.previous_estimator }}<template v-if="milestoneSurvey.previous_date">, {{ milestoneSurvey.previous_date }}</template></span>
-            </div>
-          </div>
+          </template>
 
+          <!-- REGULAR: hours + custom input -->
+          <template v-else>
           <h2 v-if="needsCustomInput">Дополнительная информация</h2>
           <h2 v-else>Укажите детали</h2>
+
+          <div v-if="idleReasonAutoSet && customDescription" class="confirm-card" style="margin-bottom: 12px">
+            <div class="confirm-row">
+              <span class="label">Причина простоя</span>
+              <span class="value">{{ customDescription }}</span>
+            </div>
+          </div>
 
           <div v-if="needsCustomInput" class="field">
             <label>{{ customInputLabel }}</label>
@@ -470,6 +487,7 @@
           <div class="step-footer">
             <button class="btn-secondary" @click="handleBack">&larr; Назад</button>
           </div>
+          </template>
         </template>
       </template>
     </div>
@@ -517,7 +535,7 @@
           </div>
         </template>
         <div v-if="customDescription && !isWarranty" class="confirm-row">
-          <span class="label">Описание</span>
+          <span class="label">{{ entry.activity_type.includes('Простой') ? 'Причина простоя' : 'Описание' }}</span>
           <span class="value">{{ customDescription }}</span>
         </div>
         <div v-if="hours" class="confirm-row">
@@ -611,11 +629,20 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTabelStore } from '../stores/tabel'
 import { useAuthStore } from '../stores/auth'
+import { useLocationStore } from '../stores/location'
 import type { ActivityNode, Claim } from '../types'
 
 const router = useRouter()
 const tabel = useTabelStore()
 const auth = useAuthStore()
+const locationStore = useLocationStore()
+
+function captureLocationIfEnabled(projectCode?: string) {
+  if (auth.user?.share_location === false) return
+  locationStore.capturePosition().then(pos => {
+    if (pos) locationStore.saveLocation(pos.latitude, pos.longitude, pos.accuracy, projectCode)
+  })
+}
 
 const step = ref(1)
 const entry = ref({ date: '', project_code: '', activity_type: '' })
@@ -633,8 +660,35 @@ const breadcrumbs = ref<ActivityNode[]>([])
 const currentNodes = ref<ActivityNode[]>([])
 const selectedActivityLabel = ref('')
 
+// Idle (Простой) subtree handling
+const IDLE_ROOT_KEYS = ['Простой', 'ШМ_Простой', 'МобБриг_Простой']
+const idleReasonAutoSet = ref(false)
+
+function stripEmoji(text: string): string {
+  return text.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D]/gu, '').trim()
+}
+
+function getIdleRoot(): ActivityNode | undefined {
+  return breadcrumbs.value.find(b => IDLE_ROOT_KEYS.includes(b.key))
+}
+
+function composeIdleReason(node: ActivityNode): string {
+  const idleRoot = getIdleRoot()
+  if (!idleRoot) return ''
+  const rootIndex = breadcrumbs.value.indexOf(idleRoot)
+  const pathAfterRoot = breadcrumbs.value.slice(rootIndex + 1)
+  if (pathAfterRoot.length === 0) return stripEmoji(node.label)
+  const category = stripEmoji(pathAfterRoot[0]!.label)
+  const subcategories = [
+    ...pathAfterRoot.slice(1).map(b => stripEmoji(b.label)),
+    stripEmoji(node.label)
+  ]
+  return `${category} (${subcategories.join(', ')})`
+}
+
 // Absence flow
 const isAbsenceFlow = computed(() => selectedWorkType.value?.key === 'absence')
+const isSingleDateAbsence = computed(() => entry.value.activity_type === 'Донорский день')
 const absenceStartDate = ref('')
 const absenceEndDate = ref('')
 
@@ -651,7 +705,9 @@ const absenceEndFormatted = computed(() => {
 })
 
 const absenceDayCount = computed(() => {
-  if (!absenceStartDate.value || !absenceEndDate.value) return 0
+  if (!absenceStartDate.value) return 0
+  if (isSingleDateAbsence.value) return 1
+  if (!absenceEndDate.value) return 0
   const s = new Date(absenceStartDate.value)
   const e = new Date(absenceEndDate.value)
   if (e < s) return 0
@@ -659,6 +715,7 @@ const absenceDayCount = computed(() => {
 })
 
 const absenceDateError = computed(() => {
+  if (isSingleDateAbsence.value) return ''
   if (!absenceStartDate.value || !absenceEndDate.value) return ''
   if (absenceDayCount.value === 0) return 'Дата окончания не может быть раньше начала'
   if (absenceDayCount.value > 60) return 'Максимальный период — 60 дней'
@@ -666,6 +723,7 @@ const absenceDateError = computed(() => {
 })
 
 const absenceDatesValid = computed(() => {
+  if (isSingleDateAbsence.value) return !!absenceStartDate.value
   return absenceDayCount.value > 0 && absenceDayCount.value <= 60 && !absenceDateError.value
 })
 
@@ -748,7 +806,12 @@ const totalSteps = computed(() => {
 // Special activity type flags
 const needsCustomInput = computed(() => {
   const key = entry.value.activity_type
+  if (key.includes('Простой') && idleReasonAutoSet.value) return false
   return key.includes('Простой') || key.includes('Прочее') || key.includes('ПрочаяДеятельность')
+})
+
+const isMilestoneConfirmation = computed(() => {
+  return entry.value.activity_type.includes('ПодтВех')
 })
 
 const customInputLabel = computed(() => {
@@ -823,12 +886,16 @@ async function submitAbsence() {
   successMsg.value = ''
 
   try {
+    const startFmt = absenceStartFormatted.value
+    const endFmt = isSingleDateAbsence.value ? startFmt : absenceEndFormatted.value
     const result = await tabel.createAbsence({
       activity_type: entry.value.activity_type,
-      start_date: absenceStartFormatted.value,
-      end_date: absenceEndFormatted.value,
+      start_date: startFmt,
+      end_date: endFmt,
     })
     successMsg.value = result.message
+    // Fire-and-forget: capture + save location
+    captureLocationIfEnabled()
     setTimeout(() => resetForm(), 2000)
   } catch (e: unknown) {
     error.value = (e as { message?: string }).message || 'Ошибка'
@@ -873,11 +940,41 @@ function initActivityNavigation() {
 // REGULAR: Step 4 - Activity
 async function selectActivity(node: ActivityNode) {
   if (node.leaf) {
+    // Check if we're in a Простой subtree
+    const idleRoot = getIdleRoot()
+
+    if (idleRoot) {
+      // Простой subtree leaf selected
+      entry.value.activity_type = idleRoot.key
+      selectedActivityLabel.value = idleRoot.label
+      hours.value = null
+      selectedClaim.value = null
+      milestoneSurvey.value = null
+      milestoneSurveyDone.value = false
+      milestonePercent.value = null
+      milestoneError.value = ''
+      milestoneResult.value = null
+
+      if (node.needsInput) {
+        // "Другая причина" - send leaf key directly, backend normalizes
+        entry.value.activity_type = node.key
+        customDescription.value = ''
+        idleReasonAutoSet.value = false
+      } else {
+        customDescription.value = composeIdleReason(node)
+        idleReasonAutoSet.value = true
+      }
+
+      step.value = 5
+      return
+    }
+
     entry.value.activity_type = node.key
     selectedActivityLabel.value = node.label
     customDescription.value = ''
     hours.value = null
     selectedClaim.value = null
+    idleReasonAutoSet.value = false
     // Reset milestone survey state
     milestoneSurvey.value = null
     milestoneSurveyDone.value = false
@@ -1018,6 +1115,8 @@ async function submitEntry() {
       idle_reason: customDescription.value || undefined,
     })
     successMsg.value = result.message
+    // Fire-and-forget: capture + save location
+    captureLocationIfEnabled(entry.value.project_code)
     if (isWarranty.value) {
       tabelSubmitted.value = true
     } else {
@@ -1065,6 +1164,8 @@ function resetForm() {
   claimCloseSubmitting.value = false
   claimCloseError.value = ''
   warrantyHoursMode.value = false
+  // Idle reason
+  idleReasonAutoSet.value = false
   // Milestone survey
   milestoneSurvey.value = null
   milestoneSurveyLoading.value = false
@@ -1128,6 +1229,8 @@ function handleBack() {
         milestonePercent.value = null
         milestoneError.value = ''
         milestoneResult.value = null
+        idleReasonAutoSet.value = false
+        customDescription.value = ''
         step.value = 4
         creatingClaim.value = false
         warrantyOriginalKey.value = ''

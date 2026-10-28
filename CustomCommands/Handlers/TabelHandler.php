@@ -1068,8 +1068,8 @@ class TabelHandler implements CallbackHandlerInterface
             return $this->handleAbsenceMenu($chatId, $messageId);
         }
 
-        // Absence type selection (Больничный or Отпуск)
-        if ($category === 'Табель_Отсутствие_Больничный' || $category === 'Табель_Отсутствие_Отпуск') {
+        // Absence type selection (Больничный, Отпуск, or Донорский день)
+        if ($category === 'Табель_Отсутствие_Больничный' || $category === 'Табель_Отсутствие_Отпуск' || $category === 'Табель_Отсутствие_Донорский') {
             error_log("TabelHandler: routing to handleAbsenceTypeSelection with category: '{$category}'");
             return $this->handleAbsenceTypeSelection($chatId, $category, $conversation, $messageId);
         }
@@ -2104,8 +2104,15 @@ class TabelHandler implements CallbackHandlerInterface
 
     private function handleAbsenceTypeSelection(string $chatId, string $category, Conversation $conversation, ?int $messageId = null): ServerResponse
     {
-        $absenceType = str_contains($category, 'Больничный') ? 'Больничный' : 'Отпуск';
-        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+        if (str_contains($category, 'Больничный')) {
+            $absenceType = 'Больничный';
+        } elseif (str_contains($category, 'Донорский')) {
+            $absenceType = 'Донорский день';
+        } else {
+            $absenceType = 'Отпуск';
+        }
+        $emojiMap = ['Больничный' => '🏥', 'Отпуск' => '🏖', 'Донорский день' => '🩸'];
+        $emoji = $emojiMap[$absenceType] ?? '📋';
 
         // Clear any old absence state
         unset($conversation->notes['absence_start_date']);
@@ -2119,7 +2126,10 @@ class TabelHandler implements CallbackHandlerInterface
 
         error_log("TabelHandler: Absence type selected: '{$absenceType}' for chat: {$chatId}");
 
-        $text = "{$emoji} <b>{$absenceType}</b>\n\nВведите дату начала в формате ДД.ММ.ГГГГ\n\nПример: 01.02.2026";
+        $datePrompt = $absenceType === 'Донорский день'
+            ? "{$emoji} <b>{$absenceType}</b>\n\nВведите дату в формате ДД.ММ.ГГГГ\n\nПример: 01.02.2026"
+            : "{$emoji} <b>{$absenceType}</b>\n\nВведите дату начала в формате ДД.ММ.ГГГГ\n\nПример: 01.02.2026";
+        $text = $datePrompt;
         $text = $this->ensureUtf8Encoding($text);
         $cancelKeyboard = [
             [['text' => '❌ Отмена', 'callback_data' => 'category_Табель']]
@@ -2149,10 +2159,32 @@ class TabelHandler implements CallbackHandlerInterface
         }
 
         $absenceType = $conversation->notes['absence_type'] ?? 'Больничный';
-        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+        $emojiMap = ['Больничный' => '🏥', 'Отпуск' => '🏖', 'Донорский день' => '🩸'];
+        $emoji = $emojiMap[$absenceType] ?? '📋';
 
         $conversation->notes['absence_start_date'] = $text;
         $conversation->notes['awaiting_absence_start_date'] = false;
+
+        // Донорский день: single date, skip end date input
+        if ($absenceType === 'Донорский день') {
+            $conversation->notes['absence_end_date'] = $text;
+            $conversation->notes['absence_day_count'] = 1;
+            $conversation->update();
+
+            $confirmText = "{$emoji} <b>{$absenceType}</b>\n";
+            $confirmText .= "Дата: <b>{$text}</b>\n\n";
+            $confirmText .= "Подтвердить?";
+
+            $keyboard = [
+                [
+                    ['text' => '✅ Да', 'callback_data' => 'category_Табель_Отсутствие_yes'],
+                    ['text' => '❌ Нет', 'callback_data' => 'category_Табель']
+                ]
+            ];
+
+            return $this->messageService->sendMessage($chatId, $confirmText, $keyboard);
+        }
+
         $conversation->notes['awaiting_absence_end_date'] = true;
         $conversation->update();
 
@@ -2183,7 +2215,8 @@ class TabelHandler implements CallbackHandlerInterface
 
         $startDateStr = $conversation->notes['absence_start_date'] ?? '';
         $absenceType = $conversation->notes['absence_type'] ?? 'Больничный';
-        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+        $emojiMap = ['Больничный' => '🏥', 'Отпуск' => '🏖', 'Донорский день' => '🩸'];
+        $emoji = $emojiMap[$absenceType] ?? '📋';
 
         // Parse dates and validate end >= start
         $startDate = \DateTime::createFromFormat('d.m.Y', $startDateStr);
@@ -2272,10 +2305,15 @@ class TabelHandler implements CallbackHandlerInterface
         unset($conversation->notes['absence_day_count']);
         $conversation->update();
 
-        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+        $emojiMap = ['Больничный' => '🏥', 'Отпуск' => '🏖', 'Донорский день' => '🩸'];
+        $emoji = $emojiMap[$absenceType] ?? '📋';
 
         if ($success) {
-            $text = "✅ {$emoji} {$absenceType} с {$startDate} по {$endDate} ({$dayCount} дн.) — записи добавлены";
+            if ($dayCount == 1) {
+                $text = "✅ {$emoji} {$absenceType} {$startDate} — запись добавлена";
+            } else {
+                $text = "✅ {$emoji} {$absenceType} с {$startDate} по {$endDate} ({$dayCount} дн.) — записи добавлены";
+            }
         } else {
             $text = "❌ Ошибка сохранения записей. Попробуйте позже или обратитесь к администратору.";
         }

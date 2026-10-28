@@ -937,7 +937,7 @@ class MessageService
                 ['text' => '📏 Метрология', 'callback_data' => 'cat_ТабМетрол']
             ],
             [
-                ['text' => '📊 Режимная наладка', 'callback_data' => 'cat_ТабРежНал']
+                ['text' => '📊 Индивидуальные испытания', 'callback_data' => 'cat_ТабРежНал']
             ],
             [
                 ['text' => '🔄 Комплексное опробование', 'callback_data' => 'cat_ТабКомплОпр']
@@ -996,7 +996,7 @@ class MessageService
                 ['text' => '🔄 Комплексное опробование', 'callback_data' => 'category_Табель_КомплОпробование']
             ],
             [
-                ['text' => '📊 Режимная наладка', 'callback_data' => 'category_Табель_РежимнаяНаладка']
+                ['text' => '📊 Индивидуальные испытания', 'callback_data' => 'category_Табель_РежимнаяНаладка']
             ],
             [
                 ['text' => '🚗 Подготовка к служебной поездке', 'callback_data' => 'category_Табель_Подготовка']

@@ -212,6 +212,11 @@ class GenericmessageCommand extends SystemCommand
             return $this->handleCMRMilestoneHoursInput($chatId, $userId, $text, $conversation);
         }
         
+        // Check if user is setting stage planned completion date (ШМР/ПНР/СМР)
+        if ($this->isSettingStagePlannedDate($conversation, $userId)) {
+            return $this->handleStagePlannedDateInput($chatId, $userId, $text, $conversation);
+        }
+        
         // Check if user is setting CMR mobilization
         if ($this->isSettingCMRMobilization($conversation, $userId)) {
             return $this->handleCMRMobilizationInput($chatId, $userId, $text, $conversation);
@@ -271,6 +276,16 @@ class GenericmessageCommand extends SystemCommand
             $conversation->update();
             $profileHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProfileHandler($this->messageService);
             return $profileHandler->handleWebLoginUpdate($text, $userId, $chatId);
+        }
+        
+        // Check if superadmin is entering a custom password for user reset
+        if (isset($conversation->notes['awaiting_admin_reset_pwd']) && $conversation->notes['awaiting_admin_reset_pwd']) {
+            $targetTgId = (int) ($conversation->notes['admin_reset_pwd_target'] ?? 0);
+            $conversation->notes['awaiting_admin_reset_pwd'] = false;
+            $conversation->notes['admin_reset_pwd_target'] = null;
+            $conversation->update();
+            $profileHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProfileHandler($this->messageService);
+            return $profileHandler->handleAdminResetPasswordInput($text, $userId, $targetTgId, $chatId);
         }
         
         // Check if user is awaiting export key input
@@ -2013,6 +2028,30 @@ User ID должен быть числом.',
         );
         
         return $projectHandler->handleCMRMilestoneHoursInput($chatId, $userId, $text, $conversation);
+    }
+    
+    /**
+     * Check if user is setting stage planned completion date
+     */
+    private function isSettingStagePlannedDate(Conversation $conversation, int $userId): bool
+    {
+        $state = $conversation->notes['state'] ?? null;
+        return $state === 'awaiting_stage_planned_date';
+    }
+    
+    /**
+     * Handle stage planned date input
+     */
+    private function handleStagePlannedDateInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        require_once __DIR__ . '/Handlers/ProjectHandler.php';
+        
+        $projectHandler = new \Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectHandler(
+            $this->adminService,
+            $this->messageService
+        );
+        
+        return $projectHandler->handleStagePlannedDateInput($chatId, $userId, $text, $conversation);
     }
     
     /**

@@ -18,7 +18,7 @@ export const useTabelStore = defineStore('tabel', () => {
       if (cached) {
         activityTree.value = JSON.parse(cached)
       }
-      const data = await api<ActivityNode[]>('/tabel/activity-types')
+      const data = await api<ActivityNode[]>(`/tabel/activity-types?_=${Date.now()}`)
       activityTree.value = data
       localStorage.setItem('activity_tree', JSON.stringify(data))
     } catch (e) {
@@ -119,11 +119,7 @@ export const useTabelStore = defineStore('tabel', () => {
   }
 
   function getPersonalProjects(): string[] {
-    const all = [...starredProjects.value]
-    for (const r of recentProjects.value) {
-      if (!all.includes(r)) all.push(r)
-    }
-    return all.filter(p => projects.value.includes(p))
+    return starredProjects.value.filter(p => projects.value.includes(p))
   }
 
   function isStarred(code: string): boolean {

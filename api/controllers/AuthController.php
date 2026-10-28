@@ -10,6 +10,11 @@ class AuthController
     private JwtService $jwt;
     private PasswordService $password;
 
+    /**
+     * Hardcoded super admin Telegram IDs — must match AdminService::isSuperAdmin() in the TG bot.
+     */
+    private const SUPER_ADMIN_TELEGRAM_IDS = [5261465966];
+
     public function __construct(JwtService $jwt, PasswordService $password)
     {
         $this->jwt      = $jwt;
@@ -63,10 +68,13 @@ class AuthController
         }
 
         // Build tokens
+        // Resolve effective access_level: hardcoded superadmins > ozna_data > pwa_users
+        $accessLevel = $this->resolveAccessLevel($db, $user);
+
         $tokenPayload = [
             'pwa_user_id'  => (int) $user['id'],
             'telegram_id'  => $user['linked_telegram_id'] ? (int) $user['linked_telegram_id'] : null,
-            'access_level' => (int) $user['access_level'],
+            'access_level' => $accessLevel,
             'fio'          => $user['fio'] ?? '',
             'fn'           => $user['functional_direction'] ?? '',
         ];
@@ -80,7 +88,7 @@ class AuthController
             'user' => [
                 'fio'                  => $user['fio'],
                 'functional_direction' => $user['functional_direction'],
-                'access_level'         => (int) $user['access_level'],
+                'access_level'         => $accessLevel,
             ],
         ], JSON_UNESCAPED_UNICODE);
     }
@@ -128,10 +136,13 @@ class AuthController
             return;
         }
 
+        // Resolve effective access_level: hardcoded superadmins > ozna_data > pwa_users
+        $accessLevel = $this->resolveAccessLevel($db, $user);
+
         $tokenPayload = [
             'pwa_user_id'  => (int) $user['id'],
             'telegram_id'  => $user['linked_telegram_id'] ? (int) $user['linked_telegram_id'] : null,
-            'access_level' => (int) $user['access_level'],
+            'access_level' => $accessLevel,
             'fio'          => $user['fio'] ?? '',
             'fn'           => $user['functional_direction'] ?? '',
         ];
@@ -145,8 +156,57 @@ class AuthController
             'user' => [
                 'fio'                  => $user['fio'],
                 'functional_direction' => $user['functional_direction'],
-                'access_level'         => (int) $user['access_level'],
+                'access_level'         => $accessLevel,
             ],
         ], JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Resolve effective access_level for a pwa_users row.
+     * Priority: hardcoded superadmin IDs > ozna_data > pwa_users.
+     * Also syncs the resolved level back to pwa_users when it differs.
+     */
+    private function resolveAccessLevel(\mysqli $db, array $user): int
+    {
+        $tgId = $user['linked_telegram_id'] ? (int) $user['linked_telegram_id'] : 0;
+
+        // 1. Hardcoded superadmin check (matches AdminService::isSuperAdmin in TG bot)
+        if ($tgId && in_array($tgId, self::SUPER_ADMIN_TELEGRAM_IDS, true)) {
+            $this->syncPwaAccessLevel($db, (int) $user['id'], 4);
+            return 4;
+        }
+
+        $accessLevel = (int) $user['access_level'];
+
+        // 2. Check ozna_data (TG bot source of truth)
+        if ($tgId) {
+            $stmt = $db->prepare("SELECT data FROM ozna_data WHERE user_id = ?");
+            $stmt->bind_param('i', $tgId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($row) {
+                $oznaData = json_decode($row['data'], true);
+                $oznaLevel = (int) ($oznaData['access_level'] ?? 0);
+                if ($oznaLevel > $accessLevel) {
+                    $accessLevel = $oznaLevel;
+                }
+            }
+        }
+
+        // Sync back to pwa_users if changed
+        if ($accessLevel !== (int) $user['access_level']) {
+            $this->syncPwaAccessLevel($db, (int) $user['id'], $accessLevel);
+        }
+
+        return $accessLevel;
+    }
+
+    private function syncPwaAccessLevel(\mysqli $db, int $pwaUserId, int $level): void
+    {
+        $stmt = $db->prepare("UPDATE pwa_users SET access_level = ? WHERE id = ?");
+        $stmt->bind_param('ii', $level, $pwaUserId);
+        $stmt->execute();
+        $stmt->close();
     }
 }

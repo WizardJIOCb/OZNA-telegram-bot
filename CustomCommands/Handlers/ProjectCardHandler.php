@@ -107,7 +107,9 @@ class ProjectCardHandler
 <b>Формат:</b>
 • Разделитель: точка с запятой (;)
 • Кодировка: UTF-8
-• Первая строка - пример заполнения';
+• Первая строка - пример заполнения
+
+<b>Новое:</b> В основной информации можно указать плановые даты завершения ШМР и ПНР (формат: дд.мм.гггг).';
 
             Request::sendDocument([
                 'chat_id' => $chatId,
@@ -314,6 +316,21 @@ class ProjectCardHandler
                 if ($cardData['business_unit_name']) {
                     $text .= '<b>БН:</b> ' . $cardData['business_unit_name'] . '
 ';
+                }
+                
+                // Плановые даты завершения — отдельный блок
+                if (!empty($cardData['smr_planned_completion']) || !empty($cardData['pnr_planned_completion'])) {
+                    $text .= '
+📅 <b>План завершения:</b>
+';
+                    if (!empty($cardData['smr_planned_completion'])) {
+                        $text .= '  • ШМР: ' . date('d.m.Y', strtotime($cardData['smr_planned_completion'])) . '
+';
+                    }
+                    if (!empty($cardData['pnr_planned_completion'])) {
+                        $text .= '  • ПНР: ' . date('d.m.Y', strtotime($cardData['pnr_planned_completion'])) . '
+';
+                    }
                 }
                 
                 $text .= '

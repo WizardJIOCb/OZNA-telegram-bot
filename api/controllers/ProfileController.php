@@ -7,13 +7,27 @@ use OznaApi\Services\PasswordService;
 class ProfileController
 {
     /**
+     * Hardcoded super admin Telegram IDs — must match AdminService::isSuperAdmin() in the TG bot.
+     */
+    private const SUPER_ADMIN_TELEGRAM_IDS = [5261465966];
+
+    /**
      * GET /profile
      * Returns the authenticated user's profile from ozna_data (linked via telegram_id).
      */
     public function get(): void
     {
         $auth = $GLOBALS['auth_user'];
+        $pwaUserId = (int) ($auth['pwa_user_id'] ?? 0);
         $telegramId = $auth['telegram_id'] ?? null;
+
+        // Get share_location from pwa_users
+        $db = getDb();
+        $stmt = $db->prepare("SELECT share_location FROM pwa_users WHERE id = ?");
+        $stmt->bind_param('i', $pwaUserId);
+        $stmt->execute();
+        $pwaRow = $stmt->get_result()->fetch_assoc();
+        $shareLocation = (bool) ($pwaRow['share_location'] ?? 1);
 
         if (!$telegramId) {
             // No linked Telegram account — return data from pwa_users only
@@ -22,6 +36,7 @@ class ProfileController
                 'functional_direction' => $auth['fn'] ?? 'Не указано',
                 'access_level'         => (int) ($auth['access_level'] ?? 0),
                 'access_level_name'    => self::getAccessLevelName((int) ($auth['access_level'] ?? 0)),
+                'share_location'       => $shareLocation,
             ], JSON_UNESCAPED_UNICODE);
             return;
         }
@@ -39,11 +54,17 @@ class ProfileController
         $fn    = $userData['functional_direction'] ?? $auth['fn'] ?? 'Не указано';
         $level = (int) ($userData['access_level'] ?? $auth['access_level'] ?? 0);
 
+        // Apply hardcoded superadmin check (matches AdminService::isSuperAdmin in TG bot)
+        if (in_array((int) $telegramId, self::SUPER_ADMIN_TELEGRAM_IDS, true)) {
+            $level = 4;
+        }
+
         echo json_encode([
             'fio'                  => $fio,
             'functional_direction' => $fn,
             'access_level'         => $level,
             'access_level_name'    => self::getAccessLevelName($level),
+            'share_location'       => $shareLocation,
         ], JSON_UNESCAPED_UNICODE);
     }
 
@@ -94,6 +115,23 @@ class ProfileController
         $stmt2->execute();
 
         echo json_encode(['success' => true, 'message' => 'Пароль успешно изменен'], JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * PUT /profile/location
+     * Body: { "share_location": true|false }
+     */
+    public function toggleLocation(array $body): void
+    {
+        $pwaUserId = (int) ($GLOBALS['auth_user']['pwa_user_id'] ?? 0);
+        $share = !empty($body['share_location']) ? 1 : 0;
+
+        $db = getDb();
+        $stmt = $db->prepare("UPDATE pwa_users SET share_location = ? WHERE id = ?");
+        $stmt->bind_param('ii', $share, $pwaUserId);
+        $stmt->execute();
+
+        echo json_encode(['success' => true, 'share_location' => (bool) $share], JSON_UNESCAPED_UNICODE);
     }
 
     private static function getAccessLevelName(int $level): string

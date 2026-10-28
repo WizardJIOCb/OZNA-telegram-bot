@@ -12,6 +12,7 @@ class TabelEntry
         // Absence types
         'Больничный' => '🏥 Больничный',
         'Отпуск' => '🏖 Отпуск',
+        'Донорский день' => '🩸 Донорский день',
         // Standard activity types
         'Дорога' => '🛣️ Дорога',
         'Подготовка' => '🚗 Подготовка к служебной поездке',
@@ -411,6 +412,14 @@ class TabelEntry
     {
         $this->databaseService = $databaseService;
         $this->messageService = $messageService;
+    }
+
+    /**
+     * Public getter for activity type mappings (used by PWA API duplicate check).
+     */
+    public function getActivityTypeMappings(): array
+    {
+        return $this->activityTypeMappings;
     }
 
     /**
@@ -1376,7 +1385,8 @@ class TabelEntry
         error_log("=== TabelEntry->addAbsenceEntries CALLED ===");
         error_log("userId: {$userId}, absenceType: '{$absenceType}', startDate: '{$startDate}', endDate: '{$endDate}'");
 
-        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+        $emojiMap = ['Больничный' => '🏥', 'Отпуск' => '🏖', 'Донорский день' => '🩸'];
+        $emoji = $emojiMap[$absenceType] ?? '📋';
 
         // Parse dates
         $start = \DateTime::createFromFormat('d.m.Y', $startDate);
@@ -1477,15 +1487,25 @@ class TabelEntry
             }
 
             // Send ONE group notification
-            $notification = sprintf(
-                "<b>%s</b>\r\n%s %s с %s по %s (%d дн.)",
-                $fio,
-                $emoji,
-                $absenceType,
-                $startDate,
-                $endDate,
-                $dayCount
-            );
+            if ($dayCount === 1) {
+                $notification = sprintf(
+                    "<b>%s</b>\r\n%s %s: %s",
+                    $fio,
+                    $emoji,
+                    $startDate,
+                    $absenceType
+                );
+            } else {
+                $notification = sprintf(
+                    "<b>%s</b>\r\n%s %s с %s по %s (%d дн.)",
+                    $fio,
+                    $emoji,
+                    $absenceType,
+                    $startDate,
+                    $endDate,
+                    $dayCount
+                );
+            }
 
             $userData = $this->databaseService->getUserData($userId);
             $functionalDirection = $userData['functional_direction'] ?? 'Мобильная бригада';
@@ -1931,7 +1951,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_ЭлектрОб)
         if ($activityType === 'ПодтВех_ЭлектрОб') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Электрооборудование). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Электрооборудование\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -1939,7 +1961,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_ПожСигн)
         if ($activityType === 'ПодтВех_ПожСигн') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Пожарная сигнализация). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Пожарная сигнализация\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -1947,7 +1971,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_ОхрСигн)
         if ($activityType === 'ПодтВех_ОхрСигн') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Охранная сигнализация). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Охранная сигнализация\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -1955,7 +1981,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_Автом)
         if ($activityType === 'ПодтВех_Автом') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Автоматизация). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Автоматизация\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -1963,7 +1991,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_ВентОтопл)
         if ($activityType === 'ПодтВех_ВентОтопл') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Вентиляция и отопление). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Вентиляция и отопление\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -1971,7 +2001,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_ТехОб)
         if ($activityType === 'ПодтВех_ТехОб') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Технологическое оборудование). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Технологическое оборудование\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -1979,7 +2011,9 @@ class TabelEntry
         // Special handling for milestone completion (ПодтВех_Метрол)
         if ($activityType === 'ПодтВех_Метрол') {
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершения этапа наладки (Метрология). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: Метрология\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу наладки.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode
             );
         }
@@ -2130,7 +2164,9 @@ class TabelEntry
             error_log("🔍 TabelEntry::getConfirmationMessage - Work area mapped to: '{$workArea}'");
             
             return sprintf(
-                "Проект <b>%s</b>: Подтвердить завершение этапа шеф-монтажа (%s). Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: %s\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу шеф-монтажа.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode,
                 $workArea
             );
@@ -2209,7 +2245,9 @@ class TabelEntry
         // Special handling for supervision works milestone completion activities (FULL FORM - legacy support)
         if (str_contains($activityType, 'ШМР_') && str_contains($activityType, '_ПодтВех')) {
             return sprintf(
-                "Проект <b>%s</b>: <b>%s</b>. Отправить запись в табель?",
+                "⚠️ <b>Подтверждение вехи</b>\n\nПроект <b>%s</b>: <b>%s</b>\n\n" .
+                "Подтверждение вехи означает завершение всех работ по данному этапу шеф-монтажа.\n\n" .
+                "Подтвердить завершение этапа?",
                 $projectCode,
                 $activityName
             );

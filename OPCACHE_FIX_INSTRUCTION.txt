@@ -1,0 +1,92 @@
+================================================================================
+🔧 РЕШЕНИЕ ПРОБЛЕМЫ: Автоматическая синхронизация + OPcache
+================================================================================
+
+## Проблема:
+Файл синхронизируется автоматически, но PHP использует КЭШИРОВАННУЮ версию!
+
+## Решение (2 шага):
+
+### ШАГ 1: Загрузить скрипт очистки кэша
+
+Загрузите этот файл на сервер через SFTP:
+  Локально: c:\ozna_bot\force_opcache_reset.php
+  На сервер: /var/www/api.ladyzenko.pro/tg/ozna/force_opcache_reset.php
+
+ИЛИ создайте его на сервере вручную:
+
+```bash
+ssh root@82.146.42.213
+Password: 7qQ#28051961
+
+cat > /var/www/api.ladyzenko.pro/tg/ozna/force_opcache_reset.php << 'EOF'
+<?php
+header('Content-Type: text/plain');
+echo "Resetting OPcache...\n";
+if (function_exists('opcache_reset')) {
+    opcache_reset();
+    echo "✅ OPcache cleared!\n";
+} else {
+    echo "ℹ️ OPcache not available\n";
+}
+echo "Restarting PHP-FPM...\n";
+exec('sudo systemctl restart php-fpm 2>&1', $output, $return);
+echo ($return === 0 ? "✅ Done!" : "⚠️ Manual restart needed") . "\n";
+?>
+EOF
+```
+
+### ШАГ 2: Выполнить скрипт
+
+Откройте в браузере:
+  http://api.ladyzenko.pro/tg/ozna/force_opcache_reset.php
+
+ИЛИ выполните по SSH:
+```bash
+php /var/www/api.ladyzenko.pro/tg/ozna/force_opcache_reset.php
+```
+
+### ШАГ 3: Проверить работу
+
+Попробуйте открыть карточку проекта ОИ846 в боте
+
+================================================================================
+## Альтернативное решение (если первый способ не сработал):
+================================================================================
+
+### Включить авто-очистку OPcache при изменении файлов
+
+Добавьте в php.ini или pool.d/www.conf:
+
+```ini
+opcache.validate_timestamps = 1
+opcache.revalidate_freq = 0
+```
+
+Или временно отключите OPcache:
+
+```bash
+ssh root@82.146.42.213
+
+# Отключить OPcache
+echo "opcache.enable=0" >> /etc/php/7.4/fpm/conf.d/10-opcache.ini
+sudo systemctl restart php-fpm
+
+# После тестирования включить обратно:
+# opcache.enable=1
+```
+
+================================================================================
+## Проверка что всё работает:
+================================================================================
+
+Выполните по SSH:
+```bash
+# Проверка версии файла
+grep -c '\$result->free()' /var/www/api.ladyzenko.pro/tg/ozna/CustomCommands/Handlers/ProjectHandler.php
+
+# Должно быть: 15-25 вхождений
+# Если меньше 10 — файл не синхронизирован!
+```
+
+================================================================================

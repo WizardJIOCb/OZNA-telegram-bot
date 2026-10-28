@@ -16,8 +16,8 @@ class TabelController
             echo json_encode(['error' => 'Activity tree not found']);
             return;
         }
-        // Cache for 24 hours (client-side)
-        header('Cache-Control: public, max-age=86400');
+        // Short cache so updates reach users within minutes
+        header('Cache-Control: public, max-age=300, must-revalidate');
         readfile($file);
     }
 
@@ -66,7 +66,7 @@ class TabelController
             return strcmp($a, $b);
         });
 
-        header('Cache-Control: public, max-age=3600');
+        header('Cache-Control: no-cache');
         echo json_encode($projects, JSON_UNESCAPED_UNICODE);
     }
 
@@ -93,15 +93,51 @@ class TabelController
         $activityType = trim($body['activity_type'] ?? '');
         $idleReason   = trim($body['idle_reason'] ?? $body['custom_description'] ?? '');
 
+        // Normalize idle leaf keys from PWA activity tree (pnr_idle_*, smr_idle_*, mob_idle_*)
+        if (preg_match('/^(pnr|smr|mob)_idle_/', $activityType)) {
+            $prefixMap = [
+                'pnr' => 'Простой',
+                'smr' => 'ШМ_Простой',
+                'mob' => 'МобБриг_Простой',
+            ];
+            $prefix = substr($activityType, 0, 3);
+            $rootKey = $prefixMap[$prefix] ?? 'Простой';
+
+            // Resolve idle_reason from activity tree if not already provided
+            if (empty($idleReason)) {
+                $idleReason = $this->resolveIdleReasonFromTree($activityType) ?? '';
+            }
+
+            $activityType = $rootKey;
+        }
+
+        // Normalize "Другая причина" idle keys (e.g. Простой_Прочее, ШМ_Простой_Прочее)
+        // User's custom text is in idle_reason; map to root idle key
+        $idleProcheeMap = [
+            'Простой_Прочее' => 'Простой',
+            'ШМ_Простой_Прочее' => 'ШМ_Простой',
+            'МобБриг_Простой_Прочее' => 'МобБриг_Простой',
+        ];
+        if (isset($idleProcheeMap[$activityType])) {
+            $customText = $idleReason;
+            $activityType = $idleProcheeMap[$activityType];
+            $idleReason = !empty($customText) ? "Прочее ({$customText})" : 'Прочее (Другая причина)';
+        }
+
         if ($date === '' || $activityType === '') {
             http_response_code(400);
             echo json_encode(['error' => 'Укажите дату и тип работ'], JSON_UNESCAPED_UNICODE);
             return;
         }
 
-        // Project code required for non-absence entries
-        $isAbsence = in_array($activityType, ['Больничный', 'Отпуск']);
-        if (!$isAbsence && $projectCode === '') {
+        // Project code required for non-absence and non-current-activity entries
+        $isAbsence = in_array($activityType, ['Больничный', 'Отпуск', 'Донорский день']);
+        $currentActivityTypes = [
+            'МедОсмотр', 'Аттестация', 'Общая',
+            'ПодготовкаТКП_ОПНВГ', 'ПодготовкаТКП_НКО', 'ПодготовкаТКП_МСО', 'ПодготовкаТКП_АСН',
+        ];
+        $isCurrentActivity = in_array($activityType, $currentActivityTypes);
+        if (!$isAbsence && !$isCurrentActivity && $projectCode === '') {
             http_response_code(400);
             echo json_encode(['error' => 'Укажите проект'], JSON_UNESCAPED_UNICODE);
             return;
@@ -127,16 +163,74 @@ class TabelController
 
         $dbService = new \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService();
 
-        // Check for duplicate entry
-        // Skip duplicate check for entries with descriptions (warranty claims etc.)
-        // — they are unique by their claim subject
-        $activityMappings = $this->getActivityMappings();
-        $activityText = $activityMappings[$activityType] ?? $activityType;
+        // Fetch fresh FIO from DB (JWT payload may be stale)
+        $fresh = $this->getFreshUserData($auth);
+        $fio = $fresh['fio'];
+        $fn  = $fresh['fn'];
 
-        if (empty($idleReason)) {
-            $duplicate = $dbService->checkDuplicateActivityReport($telegramId, $activityText, $date, $projectCode);
+        // Initialize Telegram + services BEFORE duplicate check
+        $this->initTelegram($botRoot);
+        $messageService = new \Longman\TelegramBot\Commands\SystemCommands\Services\MessageService($dbService);
+        $tabelEntry = new \Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry($dbService, $messageService);
 
-            if ($duplicate) {
+        // Generate the message FIRST, then check for duplicates using the actual message content
+        $message = $tabelEntry->createTabelMessage($fio, $date, $projectCode, $activityType, $idleReason);
+
+        // Extract activity display text from the generated message for duplicate check
+        // This is robust because we check against the EXACT text that will be stored
+        $activityText = '';
+        if (preg_match('/табель: <b>(.+?)<\/b>/u', $message, $m)) {
+            // Standard format: "Добавлена запись в табель: <b>ACTIVITY</b>"
+            $activityText = $m[1];
+        } elseif (preg_match('/деятельность \(<b>(.+?)<\/b>\)/u', $message, $m)) {
+            // Current activity format: "Текущая деятельность (<b>ACTIVITY</b>) добавлена"
+            $activityText = $m[1];
+        } else {
+            // Fallback: use mapping via getter
+            $mappings = $tabelEntry->getActivityTypeMappings();
+            $activityText = $mappings[$activityType] ?? $activityType;
+        }
+
+        // Acquire distributed lock (same format as TG bot) to prevent race conditions
+        $lockKey = "ozna_report_{$telegramId}_" . md5("{$activityText}_{$date}_{$projectCode}");
+        $db = $dbService->getConnection();
+        $lockStmt = $db->prepare("SELECT GET_LOCK(?, 3)");
+        $lockStmt->bind_param('s', $lockKey);
+        $lockStmt->execute();
+        $lockResult = $lockStmt->get_result()->fetch_row()[0];
+        $lockStmt->close();
+
+        if (!$lockResult) {
+            http_response_code(429);
+            echo json_encode([
+                'error' => 'Запрос уже обрабатывается, подождите',
+            ], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+
+        try {
+            // Direct duplicate check using flexible date pattern (no comma requirement)
+            // This works for both standard format (✅DATE, Проект) and current activity (от <b>DATE</b>:)
+            $activityPattern = "%{$activityText}%";
+            $datePattern = "%{$date}%";
+
+            if (!empty($projectCode)) {
+                $projectPattern = "%{$projectCode}%";
+                $dupStmt = $db->prepare(
+                    "SELECT COUNT(*) as cnt FROM ozna_tabel WHERE user_id = ? AND message LIKE ? AND message LIKE ? AND message LIKE ?"
+                );
+                $dupStmt->bind_param('isss', $telegramId, $activityPattern, $datePattern, $projectPattern);
+            } else {
+                $dupStmt = $db->prepare(
+                    "SELECT COUNT(*) as cnt FROM ozna_tabel WHERE user_id = ? AND message LIKE ? AND message LIKE ?"
+                );
+                $dupStmt->bind_param('iss', $telegramId, $activityPattern, $datePattern);
+            }
+            $dupStmt->execute();
+            $cnt = $dupStmt->get_result()->fetch_assoc()['cnt'];
+            $dupStmt->close();
+
+            if ($cnt > 0) {
                 http_response_code(409);
                 echo json_encode([
                     'error' => 'Такая запись уже существует',
@@ -144,28 +238,24 @@ class TabelController
                 ], JSON_UNESCAPED_UNICODE);
                 return;
             }
-        }
 
-        // Create MessageService (needed by TabelEntry constructor)
-        // We need the Telegram bot initialized for Request::sendMessage to work
-        $this->initTelegram($botRoot);
+            // Prepend globe emoji to mark PWA origin
+            $message = "🌐 " . $message;
 
-        $messageService = new \Longman\TelegramBot\Commands\SystemCommands\Services\MessageService($dbService);
-        $tabelEntry = new \Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry($dbService, $messageService);
+            // Save to database
+            $saved = $dbService->addUserTabel($telegramId, $message);
 
-        // Format the message exactly like the TG bot does
-        $message = $tabelEntry->createTabelMessage($fio, $date, $projectCode, $activityType, $idleReason);
-
-        // Prepend globe emoji to mark PWA origin
-        $message = "🌐 " . $message;
-
-        // Save to database
-        $saved = $dbService->addUserTabel($telegramId, $message);
-
-        if (!$saved) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Ошибка сохранения записи'], JSON_UNESCAPED_UNICODE);
-            return;
+            if (!$saved) {
+                http_response_code(500);
+                echo json_encode(['error' => 'Ошибка сохранения записи'], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+        } finally {
+            // Always release the lock
+            $relStmt = $db->prepare("SELECT RELEASE_LOCK(?)");
+            $relStmt->bind_param('s', $lockKey);
+            $relStmt->execute();
+            $relStmt->close();
         }
 
         // Send notification to TG group chat
@@ -193,6 +283,81 @@ class TabelController
     /**
      * Initialize Telegram bot instance (needed for Request::sendMessage in notifications).
      */
+    /**
+     * Resolve idle_reason from activity tree for PWA leaf keys (e.g. pnr_idle_1_def)
+     */
+    private function resolveIdleReasonFromTree(string $leafKey): ?string
+    {
+        $treeFile = __DIR__ . '/../data/activity-tree.json';
+        if (!file_exists($treeFile)) return null;
+
+        $tree = json_decode(file_get_contents($treeFile), true);
+        if (!$tree) return null;
+
+        // Determine which idle root to search in
+        $idleRootKey = null;
+        if (str_starts_with($leafKey, 'pnr_idle_')) $idleRootKey = 'Простой';
+        elseif (str_starts_with($leafKey, 'smr_idle_')) $idleRootKey = 'ШМ_Простой';
+        elseif (str_starts_with($leafKey, 'mob_idle_')) $idleRootKey = 'МобБриг_Простой';
+        if (!$idleRootKey) return null;
+
+        // Find the idle root node in the tree
+        $idleRoot = $this->findNodeByKey($tree, $idleRootKey);
+        if (!$idleRoot || empty($idleRoot['children'])) return null;
+
+        // Search within idle root's children for the leaf key
+        $path = [];
+        if ($this->findNodePath($idleRoot['children'], $leafKey, $path)) {
+            if (count($path) === 0) return null;
+            if (count($path) === 1) return $this->stripEmoji($path[0]);
+            $category = $this->stripEmoji($path[0]);
+            $details = array_map([$this, 'stripEmoji'], array_slice($path, 1));
+            return $category . ' (' . implode(', ', $details) . ')';
+        }
+
+        return null;
+    }
+
+    private function findNodeByKey(array $nodes, string $key): ?array
+    {
+        foreach ($nodes as $node) {
+            if (($node['key'] ?? '') === $key) return $node;
+            if (!empty($node['children'])) {
+                $found = $this->findNodeByKey($node['children'], $key);
+                if ($found) return $found;
+            }
+        }
+        return null;
+    }
+
+    private function findNodePath(array $nodes, string $targetKey, array &$path): bool
+    {
+        foreach ($nodes as $node) {
+            $key = $node['key'] ?? '';
+            $label = $node['label'] ?? $key;
+
+            if ($key === $targetKey) {
+                $path[] = $label;
+                return true;
+            }
+
+            if (!empty($node['children'])) {
+                $path[] = $label;
+                if ($this->findNodePath($node['children'], $targetKey, $path)) {
+                    return true;
+                }
+                array_pop($path);
+            }
+        }
+        return false;
+    }
+
+    private function stripEmoji(string $text): string
+    {
+        $cleaned = preg_replace('/[\x{1F000}-\x{1FFFF}\x{2300}-\x{23FF}\x{2600}-\x{27BF}\x{FE0E}\x{FE0F}\x{200D}\x{20E3}\x{E0020}-\x{E007F}]/u', '', $text);
+        return trim($cleaned);
+    }
+
     private function initTelegram(string $botRoot): void
     {
         static $initialized = false;
@@ -266,7 +431,8 @@ class TabelController
     {
         $auth = $GLOBALS['auth_user'];
         $telegramId = $auth['telegram_id'] ?? null;
-        $fio = $auth['fio'] ?? '';
+        $fresh = $this->getFreshUserData($auth);
+        $fio = $fresh['fio'];
 
         $projectCode  = trim($body['project_code'] ?? '');
         $subject      = trim($body['subject'] ?? '');
@@ -373,8 +539,9 @@ class TabelController
     {
         $auth = $GLOBALS['auth_user'];
         $telegramId = $auth['telegram_id'] ?? null;
-        $fio = $auth['fio'] ?? '';
-        $fn  = $auth['fn'] ?? '';
+        $fresh = $this->getFreshUserData($auth);
+        $fio = $fresh['fio'];
+        $fn  = $fresh['fn'];
 
         if (!$telegramId) {
             http_response_code(400);
@@ -386,7 +553,7 @@ class TabelController
         $startDate    = trim($body['start_date'] ?? '');
         $endDate      = trim($body['end_date'] ?? '');
 
-        if (!in_array($activityType, ['Больничный', 'Отпуск'])) {
+        if (!in_array($activityType, ['Больничный', 'Отпуск', 'Донорский день'])) {
             http_response_code(400);
             echo json_encode(['error' => 'Неверный тип отсутствия'], JSON_UNESCAPED_UNICODE);
             return;
@@ -415,7 +582,8 @@ class TabelController
             return;
         }
 
-        $emoji = $activityType === 'Больничный' ? '🏥' : '🏖';
+        $emojiMap = ['Больничный' => '🏥', 'Отпуск' => '🏖', 'Донорский день' => '🩸'];
+        $emoji = $emojiMap[$activityType] ?? '📋';
 
         $botRoot = dirname(dirname(__DIR__));
         require_once $botRoot . '/CustomCommands/Services/DatabaseService.php';
@@ -459,14 +627,18 @@ class TabelController
             try {
                 $this->initTelegram($botRoot);
                 $messageService = new \Longman\TelegramBot\Commands\SystemCommands\Services\MessageService($dbService);
-                $summary = "🌐 <b>{$fio}</b>\r\n{$emoji} {$activityType} с {$startDate} по {$endDate} ({$dayCount} дн.)";
+                if ($dayCount === 1) {
+                    $summary = "🌐 <b>{$fio}</b>\r\n{$emoji} {$startDate}: {$activityType}";
+                } else {
+                    $summary = "🌐 <b>{$fio}</b>\r\n{$emoji} {$activityType} с {$startDate} по {$endDate} ({$dayCount} дн.)";
+                }
                 $messageService->sendToHistoryChatByFunctionalDirection($summary, $fn);
             } catch (\Throwable $e) {
                 error_log("PWA Absence: TG notification failed: " . $e->getMessage());
             }
         }
 
-        $msg = "Записано дней: {$saved}";
+        $msg = $saved === 1 ? "Запись добавлена" : "Записано дней: {$saved}";
         if ($skipped > 0) {
             $msg .= " (пропущено дублей: {$skipped})";
         }
@@ -549,8 +721,9 @@ class TabelController
     {
         $auth = $GLOBALS['auth_user'];
         $telegramId = $auth['telegram_id'] ?? null;
-        $fio = $auth['fio'] ?? '';
-        $fn  = $auth['fn'] ?? '';
+        $fresh = $this->getFreshUserData($auth);
+        $fio = $fresh['fio'];
+        $fn  = $fresh['fn'];
 
         $projectCode = trim($body['project_code'] ?? '');
         $activityType = trim($body['activity_type'] ?? '');
@@ -712,25 +885,32 @@ class TabelController
         return new \Longman\TelegramBot\Commands\SystemCommands\Services\MilestoneProgressService($dbService);
     }
 
-    private function getActivityMappings(): array
+    /**
+     * Fetch fresh FIO and functional_direction from pwa_users.
+     * Falls back to JWT payload if DB lookup fails.
+     */
+    private function getFreshUserData(array $auth): array
     {
-        // Load from TabelEntry via reflection to avoid duplicating the array
-        $botRoot = dirname(dirname(__DIR__));
-        require_once $botRoot . '/CustomCommands/Services/DatabaseService.php';
-        require_once $botRoot . '/CustomCommands/Services/MessageService.php';
-        require_once $botRoot . '/CustomCommands/Services/TabelEntry.php';
+        $fio = $auth['fio'] ?? '';
+        $fn  = $auth['fn'] ?? '';
+        $pwaUserId = (int) ($auth['pwa_user_id'] ?? 0);
 
-        try {
-            $ref = new \ReflectionClass(\Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry::class);
-            $prop = $ref->getProperty('activityTypeMappings');
-            $prop->setAccessible(true);
-            $dbService = new \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService();
-            $msgService = new \Longman\TelegramBot\Commands\SystemCommands\Services\MessageService($dbService);
-            $instance = new \Longman\TelegramBot\Commands\SystemCommands\Services\TabelEntry($dbService, $msgService);
-            return $prop->getValue($instance);
-        } catch (\Throwable $e) {
-            error_log("PWA: Failed to load activity mappings: " . $e->getMessage());
-            return [];
+        if ($pwaUserId > 0) {
+            try {
+                $db = getDb();
+                $stmt = $db->prepare("SELECT fio, functional_direction FROM pwa_users WHERE id = ? AND is_active = 1");
+                $stmt->bind_param('i', $pwaUserId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                if ($row) {
+                    $fio = $row['fio'] ?? $fio;
+                    $fn  = $row['functional_direction'] ?? $fn;
+                }
+            } catch (\Throwable $e) {
+                error_log("PWA getFreshUserData: " . $e->getMessage());
+            }
         }
+
+        return ['fio' => $fio, 'fn' => $fn];
     }
 }

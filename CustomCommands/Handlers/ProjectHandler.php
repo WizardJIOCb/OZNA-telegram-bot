@@ -246,6 +246,12 @@ class ProjectHandler implements CallbackHandlerInterface
             }
             if (str_starts_with($callbackData, 'proj_card_edit_')) {
                 $projectCode = str_replace('proj_card_edit_', '', $callbackData);
+                // Clear any pending input state (e.g. awaiting date input)
+                $state = $conversation->notes['state'] ?? null;
+                if ($state && str_starts_with($state, 'awaiting_')) {
+                    $conversation->notes['state'] = null;
+                    $conversation->update();
+                }
                 return $this->showProjectConstructor($chatId, $userId, $projectCode);
             }
         }
@@ -540,6 +546,7 @@ class ProjectHandler implements CallbackHandlerInterface
             while ($row = $result->fetch_assoc()) {
                 $groups[] = $row;
             }
+            $result->free();
             
             if (empty($groups)) {
                 $text = '🗑️ <b>Управление группами</b>
@@ -8369,6 +8376,11 @@ class ProjectHandler implements CallbackHandlerInterface
             return $matches[1];
         }
         
+        // Try absence format: "🏥 DD.MM.YYYY: Больничный" or "🏖 DD.MM.YYYY: Отпуск" or "🩸 DD.MM.YYYY: Донорский день"
+        if (preg_match('/[🏥🏖🩸📋]\s*(\d{2}\.\d{2}\.\d{4}):\s*(?:Больничный|Отпуск|Донорский день)/u', $message, $matches)) {
+            return $matches[1];
+        }
+        
         return null;
     }
 
@@ -8724,6 +8736,15 @@ class ProjectHandler implements CallbackHandlerInterface
             $result['date'] = $matches[1];
             $result['project'] = $matches[2];
             $description = $matches[3];
+        }
+        // Try to parse absence format (Больничный / Отпуск / Донорский день):
+        // "<b>ФИО</b>\r\n🏥 DD.MM.YYYY: Больничный"
+        elseif (preg_match('/[🏥🏖🩸📋]\s*(\d{2}\.\d{2}\.\d{4}):\s*(Больничный|Отпуск|Донорский день)/u', $message, $matches)) {
+            $result['date'] = $matches[1];
+            $result['project'] = '';
+            $result['osnovnaya'] = 'Отсутствие';
+            $result['tip1'] = $matches[2];  // Больничный / Отпуск / Донорский день
+            return $result;
         } else {
             // Cannot parse - return defaults
             return $result;
@@ -10017,6 +10038,7 @@ class ProjectHandler implements CallbackHandlerInterface
             while ($row = $result->fetch_assoc()) {
                 $projects[] = $row;
             }
+            $result->free();
             
             if (empty($projects)) {
                 $text = '📋 <b>Список проектов</b>
@@ -10195,6 +10217,25 @@ class ProjectHandler implements CallbackHandlerInterface
         $text .= '  • Записей в табеле: ' . $entryCount . '
 
 ';
+        
+        // ============ PLANNED COMPLETION DATES ============
+        $hasPlannedDates = false;
+        $plannedDatesText = "📅 <b>План завершения:</b>\n";
+        if ($cardData && !empty($cardData['smr_planned_completion'])) {
+            $plannedDatesText .= '  • ШМР: ' . date('d.m.Y', strtotime($cardData['smr_planned_completion'])) . "\n";
+            $hasPlannedDates = true;
+        }
+        if ($cardData && !empty($cardData['cmr_planned_completion'])) {
+            $plannedDatesText .= '  • СМР: ' . date('d.m.Y', strtotime($cardData['cmr_planned_completion'])) . "\n";
+            $hasPlannedDates = true;
+        }
+        if ($cardData && !empty($cardData['pnr_planned_completion'])) {
+            $plannedDatesText .= '  • ПНР: ' . date('d.m.Y', strtotime($cardData['pnr_planned_completion'])) . "\n";
+            $hasPlannedDates = true;
+        }
+        if ($hasPlannedDates) {
+            $text .= $plannedDatesText . "\n";
+        }
         
         // ============ EFFICIENCY SUMMARY SECTION ============
         $text .= "📈 <b>Эффективность этапов:</b>\n";
@@ -10539,9 +10580,11 @@ class ProjectHandler implements CallbackHandlerInterface
      * @param string $projectCode Project code
      * @param string $cmrWorkType CMR work type (e.g., 'Электромонтажные работы')
      * @param $conn Database connection
-     * @return array|null ['progress' => float 0-100, 'totalPlan' => int, 'details' => array] or null if no data
+     * @param float $cmrWorkTypeFact СМР fact days for this work type
+     * @param float $cmrWorkTypePlan СМР plan days for this work type
+     * @return array|null Forecast data with mode, progress, forecastRemainingDays
      */
-    private function calculateCMRForecastFromSMR(string $projectCode, string $cmrWorkType, $conn): ?array
+    private function calculateCMRForecastFromSMR(string $projectCode, string $cmrWorkType, $conn, float $cmrWorkTypeFact = 0, float $cmrWorkTypePlan = 0): ?array
     {
         $mapping = $this->getCMRToSMRMilestoneMapping();
         
@@ -10579,14 +10622,28 @@ class ProjectHandler implements CallbackHandlerInterface
                 $milestonePlans[$row['milestone_name']] = $planDays;
             }
         }
+        $result->free();
         
-        // If no plan data for related milestones, return null
+        // If no ШМР plan data, fall through to Mode A if we have СМР plan/fact
         if (empty($milestonePlans)) {
+            if ($cmrWorkTypePlan > 0 || $cmrWorkTypeFact > 0) {
+                // Mode A: no ШМР data at all, use СМР plan vs fact
+                $forecastRemainingDays = $this->calculateModeARemainingDays($cmrWorkTypeFact, $cmrWorkTypePlan);
+                return [
+                    'mode' => 'efficiency',
+                    'progress' => null,
+                    'totalPlan' => 0,
+                    'forecastRemainingDays' => $forecastRemainingDays,
+                    'details' => [],
+                ];
+            }
             return null;
         }
         
-        // Get SMR milestone progress estimates
+        // Get SMR milestone progress estimates and detect if any have data
         $milestoneProgress = [];
+        $hasEstimates = false;
+        
         foreach (array_keys($milestonePlans) as $milestoneName) {
             // Check if milestone is confirmed (100%)
             $confirmSql = "
@@ -10608,6 +10665,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             if ($isConfirmed) {
                 $milestoneProgress[$milestoneName] = 100;
+                $hasEstimates = true;
             } else {
                 // Check for survey estimate
                 $estimateSql = "
@@ -10627,41 +10685,86 @@ class ProjectHandler implements CallbackHandlerInterface
                 
                 if ($estimateRow) {
                     $milestoneProgress[$milestoneName] = $estimateRow['estimated_percent'];
+                    $hasEstimates = true;
                 } else {
-                    // Fallback: use min(fact/plan, 1) * 100
-                    // Get fact for this milestone
-                    $milestoneProgress[$milestoneName] = 0; // Default to 0 if no data
+                    $milestoneProgress[$milestoneName] = null;
                 }
             }
         }
         
-        // Calculate weighted progress
-        $totalWeightedProgress = 0;
-        $totalPlan = 0;
-        $details = [];
-        
-        foreach ($milestonePlans as $milestoneName => $plan) {
-            $progress = $milestoneProgress[$milestoneName] ?? 0;
-            $totalWeightedProgress += $progress * $plan;
-            $totalPlan += $plan;
-            $details[$milestoneName] = [
-                'plan' => $plan,
-                'progress' => $progress
+        // ── Mode B (Dynamic): at least one ШМР milestone has estimate/confirmation ──
+        if ($hasEstimates) {
+            $totalWeightedProgress = 0;
+            $totalPlan = 0;
+            $details = [];
+            
+            foreach ($milestonePlans as $milestoneName => $plan) {
+                $progress = $milestoneProgress[$milestoneName];
+                if ($progress === null) {
+                    // In Mode B, unassessed milestones count as 0% (we know the stage is active)
+                    $progress = 0;
+                }
+                $totalWeightedProgress += $progress * $plan;
+                $totalPlan += $plan;
+                $details[$milestoneName] = [
+                    'plan' => $plan,
+                    'progress' => $progress
+                ];
+            }
+            
+            $weightedProgress = $totalPlan > 0 ? round($totalWeightedProgress / $totalPlan, 1) : 0;
+            
+            // Derive forecastRemainingDays from progress
+            if ($weightedProgress >= 100) {
+                $forecastRemainingDays = 0;
+            } elseif ($weightedProgress > 0 && $cmrWorkTypeFact > 0) {
+                $forecastRemainingDays = round($cmrWorkTypeFact * (100 / $weightedProgress - 1), 1);
+            } else {
+                $forecastRemainingDays = $cmrWorkTypePlan > 0 ? $cmrWorkTypePlan : 0;
+            }
+            
+            return [
+                'mode' => 'dynamic',
+                'progress' => $weightedProgress,
+                'totalPlan' => $totalPlan,
+                'forecastRemainingDays' => $forecastRemainingDays,
+                'details' => $details,
             ];
         }
         
-        $weightedProgress = $totalPlan > 0 ? round($totalWeightedProgress / $totalPlan, 1) : 0;
+        // ── Mode A (Efficiency-based): no ШМР estimates at all ──
+        $forecastRemainingDays = $this->calculateModeARemainingDays($cmrWorkTypeFact, $cmrWorkTypePlan);
+        
+        $details = [];
+        foreach ($milestonePlans as $milestoneName => $plan) {
+            $details[$milestoneName] = ['plan' => $plan, 'progress' => null];
+        }
         
         return [
-            'progress' => $weightedProgress,
-            'totalPlan' => $totalPlan,
-            'details' => $details
+            'mode' => 'efficiency',
+            'progress' => null,
+            'totalPlan' => array_sum($milestonePlans),
+            'forecastRemainingDays' => $forecastRemainingDays,
+            'details' => $details,
         ];
     }
     
     /**
-     * Calculate overall CMR Досборка forecast based on all work types
-     * Returns weighted average progress across all CMR work types
+     * Mode A: calculate forecast remaining days from СМР plan vs fact (100% efficiency)
+     */
+    private function calculateModeARemainingDays(float $fact, float $plan): float
+    {
+        if ($fact > 0 && $fact < $plan) {
+            return $plan - $fact;
+        } elseif ($fact >= $plan && $plan > 0) {
+            return 0;
+        }
+        return $plan; // fact == 0 or plan == 0: remaining = full plan
+    }
+    
+    /**
+     * Calculate overall CMR forecast based on all work types (hybrid Mode A/B)
+     * Returns forecastRemainingDays and optional overallProgress (Mode B only)
      */
     private function calculateOverallCMRDosborkForecast(string $projectCode, $conn): ?array
     {
@@ -10673,27 +10776,79 @@ class ProjectHandler implements CallbackHandlerInterface
             // 'Малярные работы' - excluded
         ];
         
-        $totalProgress = 0;
-        $totalWeight = 0;
+        // Get СМР fact per work type from tabel
+        $cmrWorkTypeFacts = [];
+        $milestoneStructure = $this->getCMRMilestoneStructure();
+        foreach ($cmrWorkTypes as $wt) {
+            $subs = $milestoneStructure[$wt] ?? [];
+            $totalFact = 0;
+            foreach ($subs as $subName => $activities) {
+                $actConds = [];
+                foreach ($activities as $act) {
+                    $actConds[] = "ot.message LIKE '%" . $conn->real_escape_string($act) . "%'";
+                }
+                if (empty($actConds)) continue;
+                $filter = '(' . implode(' OR ', $actConds) . ')';
+                $sql = "SELECT COUNT(DISTINCT ot.id) as cnt FROM ozna_tabel ot INNER JOIN ozna_data od ON ot.user_id = od.user_id WHERE ot.message LIKE CONCAT('%', ?, '%') AND {$filter} AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'";
+                $stmt = $conn->prepare($sql);
+                $stmt->bind_param('s', $projectCode);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $totalFact += ($row['cnt'] ?? 0);
+            }
+            $cmrWorkTypeFacts[$wt] = $totalFact;
+        }
+        
+        // Get СМР plan per work type from project_milestones
+        $cmrWorkTypePlans = [];
+        foreach ($cmrWorkTypes as $wt) {
+            $stmt = $conn->prepare("
+                SELECT SUM(CASE WHEN unit='hours' THEN CEIL(planned_hours/8) ELSE planned_hours END) as total
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'СМР'
+                AND milestone_name LIKE CONCAT(?, '%')
+                AND is_not_applicable = 0 AND planned_hours > 0
+            ");
+            $stmt->bind_param('ss', $projectCode, $wt);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $cmrWorkTypePlans[$wt] = (float)($row['total'] ?? 0);
+        }
+        
+        $totalForecastRemaining = 0;
+        $totalModeB_Progress = 0;
+        $totalModeB_Weight = 0;
         $workTypeForecasts = [];
+        $hasAnyData = false;
         
         foreach ($cmrWorkTypes as $workType) {
-            $forecast = $this->calculateCMRForecastFromSMR($projectCode, $workType, $conn);
-            if ($forecast && $forecast['totalPlan'] > 0) {
+            $cmrFact = $cmrWorkTypeFacts[$workType] ?? 0;
+            $cmrPlan = $cmrWorkTypePlans[$workType] ?? 0;
+            $forecast = $this->calculateCMRForecastFromSMR(
+                $projectCode, $workType, $conn, $cmrFact, $cmrPlan
+            );
+            
+            if ($forecast && $forecast['forecastRemainingDays'] !== null) {
+                $hasAnyData = true;
+                $totalForecastRemaining += $forecast['forecastRemainingDays'];
                 $workTypeForecasts[$workType] = $forecast;
-                $totalProgress += $forecast['progress'] * $forecast['totalPlan'];
-                $totalWeight += $forecast['totalPlan'];
+                
+                if ($forecast['mode'] === 'dynamic' && $forecast['progress'] !== null) {
+                    $totalModeB_Progress += $forecast['progress'] * $forecast['totalPlan'];
+                    $totalModeB_Weight += $forecast['totalPlan'];
+                }
             }
         }
         
-        if ($totalWeight == 0) {
+        if (!$hasAnyData) {
             return null;
         }
         
         return [
-            'overallProgress' => round($totalProgress / $totalWeight, 1),
-            'totalPlan' => $totalWeight,
-            'workTypes' => $workTypeForecasts
+            'forecastRemainingDays' => $totalForecastRemaining,
+            'overallProgress' => $totalModeB_Weight > 0
+                ? round($totalModeB_Progress / $totalModeB_Weight, 1) : null,
+            'workTypes' => $workTypeForecasts,
         ];
     }
 
@@ -10723,6 +10878,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Get SMR milestone fact days from tabel (excluding testers and confirmations)
             // Using two-level structure: top-level milestones contain sub-milestones
@@ -10847,14 +11003,14 @@ class ProjectHandler implements CallbackHandlerInterface
                     COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж'
                          THEN ot.id END) as downtime_smr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Дорога%' 
-                         OR ot.message LIKE '%Инструктаж%' 
-                         OR ot.message LIKE '%Подготовка к служебной поездке%'
-                         OR ot.message LIKE '%Сдача авансового отчета%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж'
                          THEN ot.id END) as mobilization_smr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Разработка графика работ%'
-                         OR ot.message LIKE '%Разработка программы работ%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Разработка графика работ%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Разработка программы работ%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж'
                          THEN ot.id END) as project_activity_smr
                 FROM ozna_tabel ot
@@ -10862,7 +11018,7 @@ class ProjectHandler implements CallbackHandlerInterface
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('sssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+            $stmt->bind_param('sssssssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $smrAdditional = $result->fetch_assoc();
@@ -10911,7 +11067,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get additional work plan from project_cards
             $stmt = $conn->prepare("
-                SELECT smr_mobilization, smr_project_activity, smr_master_duties
+                SELECT smr_mobilization, smr_project_activity, smr_master_duties, smr_historical_fact
                 FROM project_cards
                 WHERE project_code = ?
             ");
@@ -10924,7 +11080,9 @@ class ProjectHandler implements CallbackHandlerInterface
             $smrMobilizationPlan = ($cardData && $cardData['smr_mobilization']) ? $cardData['smr_mobilization'] : 0;
             $smrProjectActivityPlan = ($cardData && $cardData['smr_project_activity']) ? $cardData['smr_project_activity'] : 0;
             $smrMasterDutiesPlan = ($cardData && $cardData['smr_master_duties']) ? $cardData['smr_master_duties'] : 0;
+            $smrHistoricalFact = (float)($cardData['smr_historical_fact'] ?? 0);
             $smrAuxPlan = $smrMobilizationPlan + $smrProjectActivityPlan + $smrMasterDutiesPlan;
+            $smrTotalFactFromTabel += $smrHistoricalFact;
             // $smrTotalPlan показывает только план по вехам, без вспомогательных работ
             
             // ============ CALCULATE EFFICIENCY METRICS ============
@@ -10942,6 +11100,7 @@ class ProjectHandler implements CallbackHandlerInterface
             while ($row = $result->fetch_assoc()) {
                 $milestoneEstimates[$row['milestone_name']] = $row;
             }
+            $result->free();
             
             // Get additional work facts early for calculations
             $mobFact = $smrAdditional['mobilization_smr'] ?? 0;
@@ -11046,7 +11205,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $text .= "<b>Наименование:</b> " . $project['project_name'] . "\n\n";
             
             // Overall metrics
-            $text .= "📊 <b>План:</b> " . $smrTotalPlan . " дн. | <b>Факт:</b> " . $smrTotalFactFromTabel . " дн.\n";
+            $text .= "📊 <b>План:</b> " . $overallPlanTime . " дн. | <b>Факт:</b> " . $smrTotalFactFromTabel . " дн.\n";
             if ($stagePlanTime > 0 && $stageEffectiveWork >= $stagePlanTime) {
                 $text .= "✅ Этап завершен\n";
             }
@@ -11081,6 +11240,15 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // ============ FORECAST EFFICIENCY ============
             if ($stagePlanTime > 0 && $remainingPlanWork > 0) {
+                // Show planned completion date before forecast
+                $stmtDate = $conn->prepare("SELECT smr_planned_completion FROM project_cards WHERE project_code = ?");
+                $stmtDate->bind_param('s', $projectCode);
+                $stmtDate->execute();
+                $dateRow = $stmtDate->get_result()->fetch_assoc();
+                if ($dateRow && !empty($dateRow['smr_planned_completion'])) {
+                    $text .= "\n📅 <b>План завершения:</b> " . date('d.m.Y', strtotime($dateRow['smr_planned_completion'])) . "\n";
+                }
+                
                 $text .= "\n<b>🔮 Прогноз эффективности:</b>\n";
                 
                 // Forecast overall
@@ -11152,6 +11320,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Build display structure
             $hasAnyMilestones = false;
@@ -11437,6 +11606,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Get CMR milestone fact days from tabel (excluding testers)
             // Using two-level structure: top-level milestones contain sub-milestones
@@ -11480,40 +11650,44 @@ class ProjectHandler implements CallbackHandlerInterface
                 $cmrMilestonesFact[$topMilestoneName]['total'] = $topMilestoneFact;
             }
             
-            // Get CMR mobilization from tabel
+            // Get CMR auxiliary work facts from tabel (matching PWA categories)
             $stmt = $conn->prepare("
                 SELECT 
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Дорога%' 
-                         OR ot.message LIKE '%Инструктаж%' 
-                         OR ot.message LIKE '%Подготовка к служебной поездке%'
-                         OR ot.message LIKE '%Сдача авансового отчета%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
                          AND ot.message LIKE CONCAT('%', ?, '%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
-                         THEN ot.id END) as mobilization_cmr
+                         THEN ot.id END) as mobilization_cmr,
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Разработка графика работ%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Разработка программы работ%'))
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
+                         THEN ot.id END) as project_activity_cmr,
+                    COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%')
+                         AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
+                         THEN ot.id END) as downtime_cmr
                 FROM ozna_tabel ot
                 INNER JOIN ozna_data od ON ot.user_id = od.user_id
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('ss', $projectCode, $projectCode);
+            $stmt->bind_param('sssssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $cmrAdditional = $result->fetch_assoc();
             
-            // Get TOTAL CMR fact count
-            $stmt = $conn->prepare("
-                SELECT COUNT(DISTINCT ot.id) as cmr_total_count
-                FROM ozna_tabel ot
-                INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                WHERE ot.message LIKE CONCAT('%', ?, '%')
-                AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
-                AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-            ");
-            $stmt->bind_param('s', $projectCode);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $cmrTotalRow = $result->fetch_assoc();
-            $cmrTotalFactFromTabel = $cmrTotalRow['cmr_total_count'] ?? 0;
+            // Calculate total CMR fact as categorized sum (matching PWA logic):
+            // milestoneFact + mobilization + projectActivity + downtime
+            // (rk_comments and warranty are already tracked as sub-milestones in СМР)
+            $cmrMilestonesTotalFact = 0;
+            foreach ($cmrMilestonesFact as $mData) {
+                $cmrMilestonesTotalFact += $mData['total'] ?? 0;
+            }
+            $cmrMobilizationFact = $cmrAdditional['mobilization_cmr'] ?? 0;
+            $cmrProjectActivityFact = $cmrAdditional['project_activity_cmr'] ?? 0;
+            $cmrDowntimeFact = $cmrAdditional['downtime_cmr'] ?? 0;
+            $cmrTotalFactFromTabel = $cmrMilestonesTotalFact + $cmrMobilizationFact + $cmrProjectActivityFact + $cmrDowntimeFact;
             
             // Calculate total plan from sub-milestones
             $cmrTotalPlan = 0;
@@ -11529,7 +11703,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get mobilization plan from project_cards
             $stmt = $conn->prepare("
-                SELECT cmr_mobilization, cmr_forecast_enabled
+                SELECT cmr_mobilization, cmr_project_activity, cmr_forecast_enabled, cmr_historical_fact
                 FROM project_cards
                 WHERE project_code = ?
             ");
@@ -11539,7 +11713,10 @@ class ProjectHandler implements CallbackHandlerInterface
             $cardData = $result->fetch_assoc();
             
             $cmrMobilizationPlan = ($cardData && $cardData['cmr_mobilization']) ? $cardData['cmr_mobilization'] : 0;
-            $cmrTotalPlan += $cmrMobilizationPlan;
+            $cmrProjectActivityPlan = ($cardData && $cardData['cmr_project_activity']) ? $cardData['cmr_project_activity'] : 0;
+            $cmrHistoricalFact = (float)($cardData['cmr_historical_fact'] ?? 0);
+            $cmrTotalPlan += $cmrMobilizationPlan + $cmrProjectActivityPlan;
+            $cmrTotalFactFromTabel += $cmrHistoricalFact;
             
             // Check if forecast is enabled for this project
             $forecastEnabled = ($cardData && isset($cardData['cmr_forecast_enabled'])) ? (bool)$cardData['cmr_forecast_enabled'] : true;
@@ -11591,22 +11768,28 @@ class ProjectHandler implements CallbackHandlerInterface
                 $text .= "⚠️ План не установлен\n";
             }
             
+            // Show planned completion date (independent of forecast setting)
+            $stmtDate = $conn->prepare("SELECT cmr_planned_completion FROM project_cards WHERE project_code = ?");
+            $stmtDate->bind_param('s', $projectCode);
+            $stmtDate->execute();
+            $dateRow = $stmtDate->get_result()->fetch_assoc();
+            if ($dateRow && !empty($dateRow['cmr_planned_completion'])) {
+                $text .= "\n📅 <b>План завершения:</b> " . date('d.m.Y', strtotime($dateRow['cmr_planned_completion'])) . "\n";
+            }
+            
             // ============ FORECAST EFFICIENCY ============
             if ($forecastEnabled) {
                 $cmrForecast = $this->calculateOverallCMRDosborkForecast($projectCode, $conn);
-                if ($cmrForecast && $cmrForecast['overallProgress'] > 0 && $cmrTotalPlan > 0 && $cmrTotalFactFromTabel > 0) {
-                    $smrProgress = $cmrForecast['overallProgress'];
-                    
-                    if ($smrProgress >= 100) {
-                        $forecastTotalFact = $cmrTotalFactFromTabel;
-                        $forecastStageFact = $cmrStageFact ?? $cmrTotalFactFromTabel;
-                    } else {
-                        $forecastTotalFact = round($cmrTotalFactFromTabel / ($smrProgress / 100), 1);
-                        $forecastStageFact = isset($cmrStageFact) && $cmrStageFact > 0 ? round($cmrStageFact / ($smrProgress / 100), 1) : 0;
-                    }
+                if ($cmrForecast && $cmrForecast['forecastRemainingDays'] !== null && $cmrTotalPlan > 0) {
+                    $forecastTotalFact = $cmrTotalFactFromTabel + $cmrForecast['forecastRemainingDays'];
+                    $forecastStageFact = (isset($cmrStageFact) ? $cmrStageFact : $cmrTotalFactFromTabel) + $cmrForecast['forecastRemainingDays'];
                     
                     $text .= "\n<b>🔮 Прогноз эффективности:</b>\n";
-                    $text .= "📊 Прогресс ШМР: {$smrProgress}%\n";
+                    
+                    // Show progress only if Mode B (dynamic) data exists
+                    if ($cmrForecast['overallProgress'] !== null) {
+                        $text .= "📊 Прогресс СМР: {$cmrForecast['overallProgress']}%\n";
+                    }
                     
                     // Forecast overall
                     if ($forecastTotalFact > 0) {
@@ -11717,20 +11900,25 @@ class ProjectHandler implements CallbackHandlerInterface
                     }
                     
                     // Per-milestone forecast based on related ШМР milestones
-                    if ($forecastEnabled && $topMilestone['plan'] > 0 && $topMilestone['fact'] > 0) {
-                        $milestoneForecast = $this->calculateCMRForecastFromSMR($projectCode, $topMilestone['name'], $conn);
-                        if ($milestoneForecast && $milestoneForecast['progress'] > 0) {
-                            $mProgress = $milestoneForecast['progress'];
-                            if ($mProgress >= 100) {
-                                $mForecastFact = $topMilestone['fact'];
-                            } else {
-                                $mForecastFact = round($topMilestone['fact'] / ($mProgress / 100), 1);
+                    if ($forecastEnabled) {
+                        $milestoneForecast = $this->calculateCMRForecastFromSMR(
+                            $projectCode, $topMilestone['name'], $conn,
+                            $topMilestone['fact'], $topMilestone['plan']
+                        );
+                        if ($milestoneForecast && $milestoneForecast['forecastRemainingDays'] !== null) {
+                            $mForecastFact = $topMilestone['fact'] + $milestoneForecast['forecastRemainingDays'];
+                            if ($mForecastFact > 0 && $topMilestone['plan'] > 0) {
+                                $mForecastEff = round(($topMilestone['plan'] / $mForecastFact) * 100, 1);
+                                $mForecastDelta = round($mForecastFact - $topMilestone['plan'], 1);
+                                $mForecastDeltaStr = $mForecastDelta > 0 ? "⬆️ {$mForecastDelta}" : ($mForecastDelta < 0 ? "⬇️ " . abs($mForecastDelta) : "0");
+                                $mForecastIcon = $mForecastEff >= 100 ? '🟢' : ($mForecastEff >= 80 ? '🟡' : '🔴');
+                                if ($milestoneForecast['mode'] === 'dynamic' && $milestoneForecast['progress'] !== null) {
+                                    $mProgress = $milestoneForecast['progress'];
+                                    $text .= "     🔮 Прогноз: {$mForecastIcon} {$mForecastEff}% ({$mForecastDeltaStr} дн.) [{$mProgress}%]\n";
+                                } else {
+                                    $text .= "     🔮 Прогноз: {$mForecastIcon} {$mForecastEff}% ({$mForecastDeltaStr} дн.)\n";
+                                }
                             }
-                            $mForecastEff = round(($topMilestone['plan'] / $mForecastFact) * 100, 1);
-                            $mForecastDelta = round($mForecastFact - $topMilestone['plan'], 1);
-                            $mForecastDeltaStr = $mForecastDelta > 0 ? "⬆️ {$mForecastDelta}" : ($mForecastDelta < 0 ? "⬇️ " . abs($mForecastDelta) : "0");
-                            $mForecastIcon = $mForecastEff >= 100 ? '🟢' : ($mForecastEff >= 80 ? '🟡' : '🔴');
-                            $text .= "     🔮 Прогноз: {$mForecastIcon} {$mForecastEff}% ({$mForecastDeltaStr} дн.) [{$mProgress}%]\n";
                         }
                     }
                     
@@ -11819,6 +12007,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Get list of valid sub-milestone names
             $validSubMilestoneNames = [];
@@ -11842,7 +12031,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get auxiliary plan from project_cards
             $stmt = $conn->prepare("
-                SELECT smr_mobilization, smr_project_activity, smr_master_duties
+                SELECT smr_mobilization, smr_project_activity, smr_master_duties, smr_historical_fact
                 FROM project_cards WHERE project_code = ?
             ");
             $stmt->bind_param('s', $projectCode);
@@ -11852,6 +12041,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $smrMobilizationPlan = ($cardData && isset($cardData['smr_mobilization'])) ? (int)$cardData['smr_mobilization'] : 0;
             $smrProjectActivityPlan = ($cardData && isset($cardData['smr_project_activity'])) ? (int)$cardData['smr_project_activity'] : 0;
             $smrMasterDutiesPlan = ($cardData && isset($cardData['smr_master_duties'])) ? (int)$cardData['smr_master_duties'] : 0;
+            $smrHistoricalFact = (float)($cardData['smr_historical_fact'] ?? 0);
             $auxPlan = $smrMobilizationPlan + $smrProjectActivityPlan + $smrMasterDutiesPlan;
             
             // Get total fact from tabel (with same exclusion filters as showProjectCardSMRPage)
@@ -11871,6 +12061,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $result = $stmt->get_result();
             $row = $result->fetch_assoc();
             $totalFactFromTabel = $row['total_count'] ?? 0;
+            $totalFactFromTabel += $smrHistoricalFact;
             
             // Calculate overall plan including auxiliary work
             $overallPlan = $auxPlan;
@@ -12011,14 +12202,14 @@ class ProjectHandler implements CallbackHandlerInterface
                     COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж'
                          THEN ot.id END) as downtime_smr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Дорога%' 
-                         OR ot.message LIKE '%Инструктаж%' 
-                         OR ot.message LIKE '%Подготовка к служебной поездке%'
-                         OR ot.message LIKE '%Сдача авансового отчета%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж'
                          THEN ot.id END) as mobilization_smr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Разработка графика работ%'
-                         OR ot.message LIKE '%Разработка программы работ%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Разработка графика работ%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Разработка программы работ%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Шеф-монтаж'
                          THEN ot.id END) as project_activity_smr
                 FROM ozna_tabel ot
@@ -12026,7 +12217,7 @@ class ProjectHandler implements CallbackHandlerInterface
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('sssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+            $stmt->bind_param('sssssssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $smrAdditional = $result->fetch_assoc();
@@ -12058,7 +12249,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get additional work plan from project_cards
             $stmt = $conn->prepare("
-                SELECT smr_mobilization, smr_project_activity, smr_master_duties
+                SELECT smr_mobilization, smr_project_activity, smr_master_duties, smr_historical_fact
                 FROM project_cards
                 WHERE project_code = ?
             ");
@@ -12070,6 +12261,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $smrMobilizationPlan = ($cardData && $cardData['smr_mobilization']) ? $cardData['smr_mobilization'] : 0;
             $smrProjectActivityPlan = ($cardData && $cardData['smr_project_activity']) ? $cardData['smr_project_activity'] : 0;
             $smrMasterDutiesPlan = ($cardData && $cardData['smr_master_duties']) ? $cardData['smr_master_duties'] : 0;
+            $smrTotalFactFromTabel += (float)($cardData['smr_historical_fact'] ?? 0);
             
             // Get milestone progress estimates from survey data (ШМР)
             $milestoneEstimates = [];
@@ -12085,6 +12277,7 @@ class ProjectHandler implements CallbackHandlerInterface
             while ($row = $result->fetch_assoc()) {
                 $milestoneEstimates[$row['milestone_name']] = $row;
             }
+            $result->free();
             
             // Calculate milestone totals and NVOR
             $milestonesTotalFact = 0;
@@ -12276,6 +12469,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Check if there's any PNR plan data
             $hasPlanData = false;
@@ -12287,13 +12481,14 @@ class ProjectHandler implements CallbackHandlerInterface
             }
             
             // Get auxiliary plan from project_cards
-            $stmt = $conn->prepare("SELECT pnr_mobilization, pnr_project_activity FROM project_cards WHERE project_code = ?");
+            $stmt = $conn->prepare("SELECT pnr_mobilization, pnr_project_activity, pnr_historical_fact FROM project_cards WHERE project_code = ?");
             $stmt->bind_param('s', $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $cardData = $result->fetch_assoc();
             $pnrMobilizationPlan = ($cardData && isset($cardData['pnr_mobilization'])) ? (int)$cardData['pnr_mobilization'] : 0;
             $pnrProjectActivityPlan = ($cardData && isset($cardData['pnr_project_activity'])) ? (int)$cardData['pnr_project_activity'] : 0;
+            $pnrHistoricalFact = (float)($cardData['pnr_historical_fact'] ?? 0);
             $auxPlan = $pnrMobilizationPlan + $pnrProjectActivityPlan;
             
             // Get total fact from tabel
@@ -12312,6 +12507,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $result = $stmt->get_result();
             $row = $result->fetch_assoc();
             $totalFactFromTabel = $row['total_count'] ?? 0;
+            $totalFactFromTabel += $pnrHistoricalFact;
             
             // Calculate overall plan including auxiliary work
             $overallPlan = $auxPlan;
@@ -12338,27 +12534,50 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Milestones with standalone activities
             $standaloneActivityMilestones = ['ИИ на рабочей среде', 'Комплексное опробование'];
+            // Legacy name aliases for tabel message matching
+            $nameAliases = ['ИИ на рабочей среде' => 'Режимная наладка'];
             
             // Get milestone facts and confirmation status
             $pnrMilestonesFact = [];
             $pnrMilestonesConfirmed = [];
             
             foreach ($milestoneNames as $name) {
+                $alias = $nameAliases[$name] ?? null;
                 if (in_array($name, $standaloneActivityMilestones)) {
-                    $stmt = $conn->prepare("
-                        SELECT COUNT(DISTINCT ot.id) as days_count
-                        FROM ozna_tabel ot
-                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                        WHERE ot.message LIKE CONCAT('%', ?, '%')
-                        AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
-                             OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
-                             OR ot.message LIKE CONCAT('%', ?, '%'))
-                        AND ot.message NOT LIKE '%Этап наладки завершен%'
-                        AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-                    ");
-                    $stmt->bind_param('ssss', $projectCode, $name, $name, $name);
+                    if ($alias) {
+                        $stmt = $conn->prepare("
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%'))
+                            AND ot.message NOT LIKE '%Этап наладки завершен%'
+                            AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ");
+                        $stmt->bind_param('sssssss', $projectCode, $name, $name, $name, $alias, $alias, $alias);
+                    } else {
+                        $stmt = $conn->prepare("
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%'))
+                            AND ot.message NOT LIKE '%Этап наладки завершен%'
+                            AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ");
+                        $stmt->bind_param('ssss', $projectCode, $name, $name, $name);
+                    }
                 } else {
                     $stmt = $conn->prepare("
                         SELECT COUNT(DISTINCT ot.id) as days_count
@@ -12379,18 +12598,32 @@ class ProjectHandler implements CallbackHandlerInterface
                 $row = $result->fetch_assoc();
                 $pnrMilestonesFact[$name] = $row['days_count'] ?? 0;
                 
-                // Check confirmation
-                $stmt = $conn->prepare("
-                    SELECT COUNT(*) as confirmed_count
-                    FROM ozna_tabel ot
-                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                    WHERE ot.message LIKE CONCAT('%', ?, '%')
-                    AND ot.message LIKE '%Этап наладки завершен%'
-                    AND ot.message LIKE CONCAT('%', ?, '%')
-                    AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
-                         OR ot.message LIKE '%[Конструктор]%')
-                ");
-                $stmt->bind_param('ss', $projectCode, $name);
+                // Check confirmation (match both current name and legacy alias)
+                if ($alias) {
+                    $stmt = $conn->prepare("
+                        SELECT COUNT(*) as confirmed_count
+                        FROM ozna_tabel ot
+                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                        WHERE ot.message LIKE CONCAT('%', ?, '%')
+                        AND ot.message LIKE '%Этап наладки завершен%'
+                        AND (ot.message LIKE CONCAT('%', ?, '%') OR ot.message LIKE CONCAT('%', ?, '%'))
+                        AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                             OR ot.message LIKE '%[Конструктор]%')
+                    ");
+                    $stmt->bind_param('sss', $projectCode, $name, $alias);
+                } else {
+                    $stmt = $conn->prepare("
+                        SELECT COUNT(*) as confirmed_count
+                        FROM ozna_tabel ot
+                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                        WHERE ot.message LIKE CONCAT('%', ?, '%')
+                        AND ot.message LIKE '%Этап наладки завершен%'
+                        AND ot.message LIKE CONCAT('%', ?, '%')
+                        AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                             OR ot.message LIKE '%[Конструктор]%')
+                    ");
+                    $stmt->bind_param('ss', $projectCode, $name);
+                }
                 $stmt->execute();
                 $result = $stmt->get_result();
                 $row = $result->fetch_assoc();
@@ -12410,10 +12643,11 @@ class ProjectHandler implements CallbackHandlerInterface
             while ($row = $result->fetch_assoc()) {
                 $milestoneEstimates[$row['milestone_name']] = $row;
             }
+            $result->free();
             
             // Get additional work plan
             $stmt = $conn->prepare("
-                SELECT pnr_mobilization, pnr_project_activity
+                SELECT pnr_mobilization, pnr_project_activity, pnr_historical_fact
                 FROM project_cards
                 WHERE project_code = ?
             ");
@@ -12428,14 +12662,14 @@ class ProjectHandler implements CallbackHandlerInterface
             // Get additional work facts
             $stmt = $conn->prepare("
                 SELECT 
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Дорога%' 
-                         OR ot.message LIKE '%Инструктаж%' 
-                         OR ot.message LIKE '%Подготовка к служебной поездке%'
-                         OR ot.message LIKE '%Сдача авансового отчета%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN ot.id END) as mobilization_pnr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Разработка графика работ%'
-                         OR ot.message LIKE '%Разработка программы работ%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Разработка графика работ%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Разработка программы работ%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN ot.id END) as project_activity_pnr
                 FROM ozna_tabel ot
@@ -12443,7 +12677,7 @@ class ProjectHandler implements CallbackHandlerInterface
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('s', $projectCode);
+            $stmt->bind_param('sssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $pnrAdditional = $result->fetch_assoc();
@@ -12480,6 +12714,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $pnrTotals = $result->fetch_assoc();
             
             $pnrTotalFactFromTabel = $pnrTotals['pnr_total'] ?? 0;
+            $pnrTotalFactFromTabel += (float)($cardData['pnr_historical_fact'] ?? 0);
             $downtimeFact = $pnrTotals['downtime_pnr'] ?? 0;
             $rkCommentsFact = $pnrTotals['rk_comments_pnr'] ?? 0;
             $warrantyFact = $pnrTotals['warranty_pnr'] ?? 0;
@@ -12653,6 +12888,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Check if there's any CMR milestone plan data
             $hasMilestonePlan = false;
@@ -12665,7 +12901,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get auxiliary plan from project_cards
             $stmt = $conn->prepare("
-                SELECT cmr_mobilization, cmr_project_activity, cmr_forecast_enabled
+                SELECT cmr_mobilization, cmr_project_activity, cmr_forecast_enabled, cmr_historical_fact
                 FROM project_cards WHERE project_code = ?
             ");
             $stmt->bind_param('s', $projectCode);
@@ -12674,6 +12910,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $cardData = $result->fetch_assoc();
             $cmrMobilizationPlan = ($cardData && isset($cardData['cmr_mobilization'])) ? (int)$cardData['cmr_mobilization'] : 0;
             $cmrProjectActivityPlan = ($cardData && isset($cardData['cmr_project_activity'])) ? (int)$cardData['cmr_project_activity'] : 0;
+            $cmrHistoricalFact = (float)($cardData['cmr_historical_fact'] ?? 0);
             $auxPlan = $cmrMobilizationPlan + $cmrProjectActivityPlan;
             $forecastEnabled = ($cardData && isset($cardData['cmr_forecast_enabled'])) ? (bool)$cardData['cmr_forecast_enabled'] : true;
             
@@ -12694,6 +12931,7 @@ class ProjectHandler implements CallbackHandlerInterface
             $result = $stmt->get_result();
             $row = $result->fetch_assoc();
             $totalFactFromTabel = $row['total_count'] ?? 0;
+            $totalFactFromTabel += $cmrHistoricalFact;
             
             // Calculate overall plan including auxiliary work
             $overallPlan = $auxPlan;
@@ -12732,7 +12970,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get mobilization and project activity plan from project_cards
             $stmt = $conn->prepare("
-                SELECT cmr_mobilization, cmr_project_activity
+                SELECT cmr_mobilization, cmr_project_activity, cmr_historical_fact
                 FROM project_cards
                 WHERE project_code = ?
             ");
@@ -12782,14 +13020,14 @@ class ProjectHandler implements CallbackHandlerInterface
             // Get mobilization and project activity facts
             $stmt = $conn->prepare("
                 SELECT 
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Дорога%' 
-                         OR ot.message LIKE '%Инструктаж%' 
-                         OR ot.message LIKE '%Подготовка к служебной поездке%'
-                         OR ot.message LIKE '%Сдача авансового отчета%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
                          AND ot.message LIKE CONCAT('%', ?, '%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
                          THEN ot.id END) as mobilization_cmr,
-                    COUNT(DISTINCT CASE WHEN ot.message LIKE '%Проектная деятельность%'
+                    COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Проектная деятельность%')
                          AND ot.message LIKE CONCAT('%', ?, '%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
                          THEN ot.id END) as project_activity_cmr
@@ -12798,7 +13036,7 @@ class ProjectHandler implements CallbackHandlerInterface
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('sss', $projectCode, $projectCode, $projectCode);
+            $stmt->bind_param('ssssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $auxRow = $result->fetch_assoc();
@@ -12806,8 +13044,9 @@ class ProjectHandler implements CallbackHandlerInterface
             $mobilizationFact = $auxRow['mobilization_cmr'] ?? 0;
             $projectActivityFact = $auxRow['project_activity_cmr'] ?? 0;
             
-            // Total fact = stage + auxiliary
+            // Total fact = stage + auxiliary + historical
             $totalFactTime = $stageFactTime + $mobilizationFact + $projectActivityFact;
+            $totalFactTime += (float)($cardData['cmr_historical_fact'] ?? 0);
             
             // No work done yet
             if ($totalFactTime == 0) {
@@ -13027,6 +13266,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     }
                 }
             }
+            $result->free();
             
             // Get auxiliary plan from project_cards based on work type
             $auxPlanColumns = match($workType) {
@@ -13036,9 +13276,21 @@ class ProjectHandler implements CallbackHandlerInterface
                 default => []
             };
             
+            $historicalFactColumn = match($workType) {
+                'ШМР' => 'smr_historical_fact',
+                'СМР' => 'cmr_historical_fact',
+                'ПНР' => 'pnr_historical_fact',
+                default => null
+            };
+            
             $auxPlan = 0;
+            $historicalFact = 0;
             if (!empty($auxPlanColumns)) {
-                $auxSelect = implode(', ', $auxPlanColumns);
+                $selectCols = $auxPlanColumns;
+                if ($historicalFactColumn) {
+                    $selectCols[] = $historicalFactColumn;
+                }
+                $auxSelect = implode(', ', $selectCols);
                 $stmt = $conn->prepare("SELECT {$auxSelect} FROM project_cards WHERE project_code = ?");
                 $stmt->bind_param('s', $projectCode);
                 $stmt->execute();
@@ -13048,12 +13300,15 @@ class ProjectHandler implements CallbackHandlerInterface
                     foreach ($auxPlanColumns as $col) {
                         $auxPlan += $cardData[$col] ?? 0;
                     }
+                    if ($historicalFactColumn) {
+                        $historicalFact = (float)($cardData[$historicalFactColumn] ?? 0);
+                    }
                 }
             }
             
             $overallPlan = $stagePlan + $auxPlan;
             
-            // Get total fact from tabel by functional_direction
+            // Get total fact
             $functionalDirection = match($workType) {
                 'ШМР' => 'Шеф-монтаж',
                 'СМР' => 'Мобильная бригада',
@@ -13061,22 +13316,83 @@ class ProjectHandler implements CallbackHandlerInterface
                 default => null
             };
             
-            $stmt = $conn->prepare("
-                SELECT COUNT(DISTINCT ot.id) as total_count
-                FROM ozna_tabel ot
-                INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                WHERE ot.message LIKE CONCAT('%', ?, '%')
-                AND JSON_EXTRACT(od.data, '$.functional_direction') = ?
-                AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-                AND ot.message NOT LIKE '%Этап наладки завершен%'
-                AND ot.message NOT LIKE '%Этап шеф-монтажа завершен%'
-                AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
-            ");
-            $stmt->bind_param('ss', $projectCode, $functionalDirection);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $row = $result->fetch_assoc();
-            $totalFact = $row['total_count'] ?? 0;
+            if ($workType === 'СМР') {
+                // СМР: use categorized fact (milestoneFact + auxFacts), matching PWA logic
+                // This excludes garbage old-format tabel records
+                $milestoneStructure = $this->getCMRMilestoneStructure();
+                $milestoneNames = $this->getCMRMilestoneNames();
+                $cmrMilestoneFact = 0;
+                foreach ($milestoneNames as $topName) {
+                    $subMilestones = $milestoneStructure[$topName] ?? [];
+                    foreach ($subMilestones as $subName => $activities) {
+                        $activityConditions = [];
+                        foreach ($activities as $activity) {
+                            $activityConditions[] = "ot.message LIKE '%" . $conn->real_escape_string($activity) . "%'";
+                        }
+                        $activityFilter = '(' . implode(' OR ', $activityConditions) . ')';
+                        $sql = "
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND {$activityFilter}
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ";
+                        $stmt = $conn->prepare($sql);
+                        $stmt->bind_param('s', $projectCode);
+                        $stmt->execute();
+                        $result = $stmt->get_result();
+                        $row = $result->fetch_assoc();
+                        $cmrMilestoneFact += $row['days_count'] ?? 0;
+                    }
+                }
+                // Get auxiliary facts for СМР (mobilization + project_activity + downtime)
+                $stmt = $conn->prepare("
+                    SELECT
+                        COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%')
+                             OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%')
+                             OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                             OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
+                             AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
+                             THEN ot.id END) as mobilization,
+                        COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Разработка графика работ%')
+                             OR ot.message LIKE CONCAT('%', ?, '%Разработка программы работ%'))
+                             AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
+                             THEN ot.id END) as project_activity,
+                        COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Простой%')
+                             AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Мобильная бригада'
+                             THEN ot.id END) as downtime
+                    FROM ozna_tabel ot
+                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                    WHERE ot.message LIKE CONCAT('%', ?, '%')
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                ");
+                $stmt->bind_param('ssssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $auxFacts = $result->fetch_assoc();
+                $totalFact = $cmrMilestoneFact + ($auxFacts['mobilization'] ?? 0) + ($auxFacts['project_activity'] ?? 0) + ($auxFacts['downtime'] ?? 0);
+            } else {
+                // ШМР/ПНР: use raw COUNT DISTINCT from tabel
+                $stmt = $conn->prepare("
+                    SELECT COUNT(DISTINCT ot.id) as total_count
+                    FROM ozna_tabel ot
+                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                    WHERE ot.message LIKE CONCAT('%', ?, '%')
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') = ?
+                    AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                    AND ot.message NOT LIKE '%Этап наладки завершен%'
+                    AND ot.message NOT LIKE '%Этап шеф-монтажа завершен%'
+                    AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                ");
+                $stmt->bind_param('ss', $projectCode, $functionalDirection);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $row = $result->fetch_assoc();
+                $totalFact = $row['total_count'] ?? 0;
+            }
+            $totalFact += $historicalFact;
             
             // Return null only if there's no plan AND no fact
             if ($overallPlan == 0 && $totalFact == 0) {
@@ -13233,6 +13549,7 @@ class ProjectHandler implements CallbackHandlerInterface
                     'unit' => $row['unit']
                 ];
             }
+            $result->free();
             
             // Get PNR milestone fact days from tabel (excluding testers and confirmations)
             $pnrMilestonesFact = [];
@@ -13240,24 +13557,47 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Milestones that are recorded as standalone activities (without "Работы по графику" wrapper)
             $standaloneActivityMilestones = ['ИИ на рабочей среде', 'Комплексное опробование'];
+            // Legacy name aliases for tabel message matching
+            $nameAliases = ['ИИ на рабочей среде' => 'Режимная наладка'];
             
             foreach ($milestoneNames as $name) {
+                $alias = $nameAliases[$name] ?? null;
                 // For "ИИ на рабочей среде" and "Комплексное опробование" — also match standalone activity name
                 if (in_array($name, $standaloneActivityMilestones)) {
-                    $stmt = $conn->prepare("
-                        SELECT COUNT(DISTINCT ot.id) as days_count
-                        FROM ozna_tabel ot
-                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                        WHERE ot.message LIKE CONCAT('%', ?, '%')
-                        AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
-                             OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
-                             OR ot.message LIKE CONCAT('%', ?, '%'))
-                        AND ot.message NOT LIKE '%Этап наладки завершен%'
-                        AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-                    ");
-                    $stmt->bind_param('ssss', $projectCode, $name, $name, $name);
+                    if ($alias) {
+                        $stmt = $conn->prepare("
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%'))
+                            AND ot.message NOT LIKE '%Этап наладки завершен%'
+                            AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ");
+                        $stmt->bind_param('sssssss', $projectCode, $name, $name, $name, $alias, $alias, $alias);
+                    } else {
+                        $stmt = $conn->prepare("
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%'))
+                            AND ot.message NOT LIKE '%Этап наладки завершен%'
+                            AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ");
+                        $stmt->bind_param('ssss', $projectCode, $name, $name, $name);
+                    }
                 } else {
                     // Standard milestones — match "Работы по графику" and "Формирование ИД"
                     $stmt = $conn->prepare("
@@ -13279,18 +13619,32 @@ class ProjectHandler implements CallbackHandlerInterface
                 $row = $result->fetch_assoc();
                 $pnrMilestonesFact[$name] = $row['days_count'] ?? 0;
                 
-                // Check if milestone is confirmed
-                $stmt = $conn->prepare("
-                    SELECT COUNT(*) as confirmed_count
-                    FROM ozna_tabel ot
-                    INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                    WHERE ot.message LIKE CONCAT('%', ?, '%')
-                    AND ot.message LIKE '%Этап наладки завершен%'
-                    AND ot.message LIKE CONCAT('%', ?, '%')
-                    AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
-                         OR ot.message LIKE '%[Конструктор]%')
-                ");
-                $stmt->bind_param('ss', $projectCode, $name);
+                // Check if milestone is confirmed (match both current name and legacy alias)
+                if ($alias) {
+                    $stmt = $conn->prepare("
+                        SELECT COUNT(*) as confirmed_count
+                        FROM ozna_tabel ot
+                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                        WHERE ot.message LIKE CONCAT('%', ?, '%')
+                        AND ot.message LIKE '%Этап наладки завершен%'
+                        AND (ot.message LIKE CONCAT('%', ?, '%') OR ot.message LIKE CONCAT('%', ?, '%'))
+                        AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                             OR ot.message LIKE '%[Конструктор]%')
+                    ");
+                    $stmt->bind_param('sss', $projectCode, $name, $alias);
+                } else {
+                    $stmt = $conn->prepare("
+                        SELECT COUNT(*) as confirmed_count
+                        FROM ozna_tabel ot
+                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                        WHERE ot.message LIKE CONCAT('%', ?, '%')
+                        AND ot.message LIKE '%Этап наладки завершен%'
+                        AND ot.message LIKE CONCAT('%', ?, '%')
+                        AND (JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                             OR ot.message LIKE '%[Конструктор]%')
+                    ");
+                    $stmt->bind_param('ss', $projectCode, $name);
+                }
                 $stmt->execute();
                 $result = $stmt->get_result();
                 $row = $result->fetch_assoc();
@@ -13309,14 +13663,14 @@ class ProjectHandler implements CallbackHandlerInterface
                     COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Работы по гарантии%')
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN ot.id END) as warranty_pnr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Дорога%' 
-                         OR ot.message LIKE '%Инструктаж%' 
-                         OR ot.message LIKE '%Подготовка к служебной поездке%'
-                         OR ot.message LIKE '%Сдача авансового отчета%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Дорога%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Инструктаж%') 
+                         OR ot.message LIKE CONCAT('%', ?, '%Подготовка к служебной поездке%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Сдача авансового отчета%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN ot.id END) as mobilization_pnr,
-                    COUNT(DISTINCT CASE WHEN (ot.message LIKE '%Разработка графика работ%'
-                         OR ot.message LIKE '%Разработка программы работ%')
+                    COUNT(DISTINCT CASE WHEN (ot.message LIKE CONCAT('%', ?, '%Разработка графика работ%')
+                         OR ot.message LIKE CONCAT('%', ?, '%Разработка программы работ%'))
                          AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
                          THEN ot.id END) as project_activity_pnr,
                     COUNT(DISTINCT CASE WHEN ot.message LIKE CONCAT('%', ?, '%Участие в ЗПИ%')
@@ -13327,7 +13681,7 @@ class ProjectHandler implements CallbackHandlerInterface
                 WHERE ot.message LIKE CONCAT('%', ?, '%')
                 AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
             ");
-            $stmt->bind_param('sssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
+            $stmt->bind_param('sssssssssss', $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode, $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
             $pnrAdditional = $result->fetch_assoc();
@@ -13365,6 +13719,7 @@ class ProjectHandler implements CallbackHandlerInterface
             while ($row = $result->fetch_assoc()) {
                 $milestoneEstimates[$row['milestone_name']] = $row;
             }
+            $result->free();
             
             // Calculate total plan
             $pnrTotalPlan = 0;
@@ -13380,7 +13735,7 @@ class ProjectHandler implements CallbackHandlerInterface
             
             // Get additional work plan from project_cards
             $stmt = $conn->prepare("
-                SELECT pnr_mobilization, pnr_project_activity
+                SELECT pnr_mobilization, pnr_project_activity, pnr_historical_fact
                 FROM project_cards
                 WHERE project_code = ?
             ");
@@ -13391,7 +13746,9 @@ class ProjectHandler implements CallbackHandlerInterface
             
             $pnrMobilizationPlan = ($cardData && $cardData['pnr_mobilization']) ? $cardData['pnr_mobilization'] : 0;
             $pnrProjectActivityPlan = ($cardData && $cardData['pnr_project_activity']) ? $cardData['pnr_project_activity'] : 0;
+            $pnrHistoricalFact = (float)($cardData['pnr_historical_fact'] ?? 0);
             $pnrTotalPlan += $pnrMobilizationPlan + $pnrProjectActivityPlan;
+            $pnrTotalFactFromTabel += $pnrHistoricalFact;
             
             // Get additional work facts
             $mobFact = $pnrAdditional['mobilization_pnr'] ?? 0;
@@ -13536,6 +13893,15 @@ class ProjectHandler implements CallbackHandlerInterface
                 $remainingPlanWork = max(0, $remainingPlanWork);
                 
                 if ($remainingPlanWork > 0) {
+                    // Show planned completion date before forecast
+                    $stmtDate = $conn->prepare("SELECT pnr_planned_completion FROM project_cards WHERE project_code = ?");
+                    $stmtDate->bind_param('s', $projectCode);
+                    $stmtDate->execute();
+                    $dateRow = $stmtDate->get_result()->fetch_assoc();
+                    if ($dateRow && !empty($dateRow['pnr_planned_completion'])) {
+                        $text .= "\n📅 <b>План завершения:</b> " . date('d.m.Y', strtotime($dateRow['pnr_planned_completion'])) . "\n";
+                    }
+                    
                     $text .= "\n<b>🔮 Прогноз эффективности:</b>\n";
                     
                     // Forecast overall efficiency
@@ -14029,10 +14395,19 @@ class ProjectHandler implements CallbackHandlerInterface
                     ['text' => '🔧 ШМР: Плановые трудозатраты', 'callback_data' => 'proj_constructor_smr_hours_' . $projectCode]
                 ],
                 [
+                    ['text' => '📅 ШМР: Дата завершения (план)', 'callback_data' => 'proj_constructor_smr_date_' . $projectCode]
+                ],
+                [
                     ['text' => '⚙️ ПНР: Плановые трудозатраты', 'callback_data' => 'proj_constructor_pnr_hours_' . $projectCode]
                 ],
                 [
+                    ['text' => '📅 ПНР: Дата завершения (план)', 'callback_data' => 'proj_constructor_pnr_date_' . $projectCode]
+                ],
+                [
                     ['text' => '🏗️ СМР: Плановые трудозатраты', 'callback_data' => 'proj_cmr_milestones_' . $projectCode]
+                ],
+                [
+                    ['text' => '📅 СМР: Дата завершения (план)', 'callback_data' => 'proj_constructor_cmr_date_' . $projectCode]
                 ],
                 [
                     ['text' => '💼 Наименование 1С', 'callback_data' => 'proj_constructor_1c_name_' . $projectCode]
@@ -14099,6 +14474,22 @@ class ProjectHandler implements CallbackHandlerInterface
         if (str_starts_with($callbackData, 'proj_constructor_smr_hours_')) {
             $projectCode = str_replace('proj_constructor_smr_hours_', '', $callbackData);
             return $this->showSMRMilestonesMenu($chatId, $userId, $projectCode);
+        }
+        
+        // Planned completion date callbacks
+        if (str_starts_with($callbackData, 'proj_constructor_smr_date_')) {
+            $projectCode = str_replace('proj_constructor_smr_date_', '', $callbackData);
+            return $this->promptStagePlannedDate($chatId, $userId, $projectCode, 'smr', $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_pnr_date_')) {
+            $projectCode = str_replace('proj_constructor_pnr_date_', '', $callbackData);
+            return $this->promptStagePlannedDate($chatId, $userId, $projectCode, 'pnr', $conversation);
+        }
+        
+        if (str_starts_with($callbackData, 'proj_constructor_cmr_date_')) {
+            $projectCode = str_replace('proj_constructor_cmr_date_', '', $callbackData);
+            return $this->promptStagePlannedDate($chatId, $userId, $projectCode, 'cmr', $conversation);
         }
         
         if (str_starts_with($callbackData, 'proj_nomenclature_select_')) {
@@ -14900,6 +15291,119 @@ class ProjectHandler implements CallbackHandlerInterface
             
         } catch (\Exception $e) {
             error_log("ProjectHandler::handleNomenclatureGroupNameInput error: " . $e->getMessage());
+            $conversation->stop();
+            return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Planned completion date per stage (ШМР / ПНР / СМР)
+    // ════════════════════════════════════════════════════════════
+
+    private static array $stageLabels = [
+        'smr' => 'ШМР',
+        'pnr' => 'ПНР',
+        'cmr' => 'СМР',
+    ];
+
+    /**
+     * Prompt user to enter planned completion date for a stage.
+     */
+    private function promptStagePlannedDate(string $chatId, int $userId, string $projectCode, string $stageKey, Conversation $conversation): ServerResponse
+    {
+        $label = self::$stageLabels[$stageKey] ?? $stageKey;
+
+        // Get current value
+        $conn = $this->databaseService->getConnection();
+        $col = $stageKey . '_planned_completion';
+        $stmt = $conn->prepare("SELECT {$col} FROM project_cards WHERE project_code = ?");
+        $stmt->bind_param('s', $projectCode);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $current = ($row && !empty($row[$col])) ? date('d.m.Y', strtotime($row[$col])) : null;
+
+        $conversation->notes['state'] = 'awaiting_stage_planned_date';
+        $conversation->notes['project_code'] = $projectCode;
+        $conversation->notes['stage_key'] = $stageKey;
+        $conversation->update();
+
+        $text = "📅 <b>Плановая дата завершения {$label}</b>\n\n";
+        $text .= "<b>Проект:</b> {$projectCode}\n\n";
+        if ($current) {
+            $text .= "📌 <b>Текущее значение:</b> {$current}\n\n";
+        }
+        $text .= "Введите дату в формате <b>дд.мм.гггг</b> (например, 31.12.2026):";
+
+        $keyboard = [
+            [
+                ['text' => '❌ Отмена', 'callback_data' => 'proj_card_edit_' . $projectCode]
+            ]
+        ];
+
+        return $this->messageService->sendMessage($chatId, $text, $keyboard);
+    }
+
+    /**
+     * Handle text input for stage planned completion date.
+     * Called from GenericmessageCommand when state = 'awaiting_stage_planned_date'.
+     */
+    public function handleStagePlannedDateInput(string $chatId, int $userId, string $text, Conversation $conversation): ServerResponse
+    {
+        try {
+            $projectCode = $conversation->notes['project_code'] ?? null;
+            $stageKey    = $conversation->notes['stage_key'] ?? null;
+
+            if (!$projectCode || !$stageKey) {
+                $conversation->stop();
+                return $this->messageService->sendMessage($chatId, '❌ Ошибка: данные не найдены');
+            }
+
+            $label = self::$stageLabels[$stageKey] ?? $stageKey;
+            $input = trim($text);
+
+            // Validate dd.mm.yyyy
+            $dt = \DateTime::createFromFormat('d.m.Y', $input);
+            if (!$dt || $dt->format('d.m.Y') !== $input) {
+                $errorText = "❌ Неверный формат даты\n\nВведите дату в формате <b>дд.мм.гггг</b> (например, 31.12.2026):";
+                $keyboard = [
+                    [
+                        ['text' => '❌ Отмена', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                    ]
+                ];
+                return $this->messageService->sendMessage($chatId, $errorText, $keyboard);
+            }
+
+            $sqlDate = $dt->format('Y-m-d');
+            $col = $stageKey . '_planned_completion';
+
+            $conn = $this->databaseService->getConnection();
+
+            // Ensure project_cards record exists
+            $this->ensureProjectCardExists($projectCode, $userId);
+
+            $stmt = $conn->prepare("UPDATE project_cards SET {$col} = ? WHERE project_code = ?");
+            $stmt->bind_param('ss', $sqlDate, $projectCode);
+            $stmt->execute();
+
+            $conversation->stop();
+
+            $successText = "✅ <b>Дата установлена</b>\n\n";
+            $successText .= "<b>Этап:</b> {$label}\n";
+            $successText .= "<b>Плановая дата завершения:</b> {$input}";
+
+            $keyboard = [
+                [
+                    ['text' => '⬅️ К конструктору', 'callback_data' => 'proj_card_edit_' . $projectCode]
+                ],
+                [
+                    ['text' => '📋 К карточке', 'callback_data' => 'proj_card_view_' . $projectCode]
+                ]
+            ];
+
+            return $this->messageService->sendMessage($chatId, $successText, $keyboard);
+
+        } catch (\Exception $e) {
+            error_log("ProjectHandler::handleStagePlannedDateInput error: " . $e->getMessage());
             $conversation->stop();
             return $this->messageService->sendMessage($chatId, '❌ Ошибка: ' . $e->getMessage());
         }

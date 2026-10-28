@@ -134,6 +134,9 @@ try {
         exit;
     }
 
+    // Store auth middleware in globals for controllers that need access level checks
+    $GLOBALS['auth_middleware'] = $authMw;
+
     // Profile
     if ($method === 'GET' && $path === '/profile') {
         require_once __DIR__ . '/controllers/ProfileController.php';
@@ -143,6 +146,11 @@ try {
     if ($method === 'PUT' && $path === '/profile/password') {
         require_once __DIR__ . '/controllers/ProfileController.php';
         (new OznaApi\Controllers\ProfileController())->changePassword($body, $password);
+        exit;
+    }
+    if ($method === 'PUT' && $path === '/profile/location') {
+        require_once __DIR__ . '/controllers/ProfileController.php';
+        (new OznaApi\Controllers\ProfileController())->toggleLocation($body);
         exit;
     }
 
@@ -200,6 +208,122 @@ try {
     if ($method === 'GET' && $path === '/tabel/milestone-alerts') {
         require_once __DIR__ . '/controllers/TabelController.php';
         (new OznaApi\Controllers\TabelController())->getMilestoneAlerts();
+        exit;
+    }
+
+    // Location (employee map)
+    if ($method === 'POST' && $path === '/location') {
+        require_once __DIR__ . '/controllers/LocationController.php';
+        (new OznaApi\Controllers\LocationController())->save($body);
+        exit;
+    }
+    if ($method === 'GET' && $path === '/locations') {
+        require_once __DIR__ . '/controllers/LocationController.php';
+        (new OznaApi\Controllers\LocationController())->getAll();
+        exit;
+    }
+
+    // Dashboard exports (superadmin only)
+    if ($method === 'GET' && $path === '/dashboard/exports') {
+        require_once __DIR__ . '/controllers/DashboardExportController.php';
+        (new OznaApi\Controllers\DashboardExportController())->listExports();
+        exit;
+    }
+    if ($method === 'GET' && $path === '/dashboard/exports/high-level-status') {
+        require_once __DIR__ . '/controllers/DashboardExportController.php';
+        (new OznaApi\Controllers\DashboardExportController())->highLevelStatus();
+        exit;
+    }
+
+    // Admin user management (superadmin only)
+    if ($method === 'GET' && $path === '/admin/users') {
+        require_once __DIR__ . '/controllers/AdminController.php';
+        (new OznaApi\Controllers\AdminController($password))->listUsers();
+        exit;
+    }
+    if ($method === 'PUT' && preg_match('#^/admin/users/(\d+)/reset-password$#', $path, $m)) {
+        require_once __DIR__ . '/controllers/AdminController.php';
+        (new OznaApi\Controllers\AdminController($password))->resetPassword((int) $m[1], $body);
+        exit;
+    }
+
+    // ── Metrics (supervisor+ : access_level >= 2) ───────────
+    require_once __DIR__ . '/services/MetricsCacheService.php';
+    require_once __DIR__ . '/controllers/MetricsController.php';
+    $metricsCtrl = new OznaApi\Controllers\MetricsController();
+
+    if ($method === 'GET' && $path === '/metrics/bn-summary') {
+        $metricsCtrl->bnSummary();
+        exit;
+    }
+    if ($method === 'GET' && $path === '/metrics/projects') {
+        $metricsCtrl->projects($_GET['group'] ?? '');
+        exit;
+    }
+    if ($method === 'POST' && $path === '/metrics/favorites') {
+        $metricsCtrl->toggleFavorite($body);
+        exit;
+    }
+    // Lookup creation endpoints (fillable lists)
+    if ($method === 'POST' && $path === '/metrics/lookups/customer') {
+        $metricsCtrl->createCustomer($body);
+        exit;
+    }
+    if ($method === 'POST' && $path === '/metrics/lookups/business-unit') {
+        $metricsCtrl->createBusinessUnit($body);
+        exit;
+    }
+    if ($method === 'POST' && $path === '/metrics/lookups/manager') {
+        $metricsCtrl->createManager($body);
+        exit;
+    }
+    // Milestones Confirmation
+    if ($method === 'POST' && $path === '/metrics/milestone-confirm') {
+        $metricsCtrl->confirmMilestone($body);
+        exit;
+    }
+    if ($method === 'POST' && $path === '/metrics/milestone-unconfirm') {
+        $metricsCtrl->unconfirmMilestone($body);
+        exit;
+    }
+    // Milestones CRUD — MUST come before /project-card/{code}
+    if (preg_match('#^/metrics/milestones/([^/]+)/(.+)$#u', $path, $m)) {
+        $code = urldecode($m[1]);
+        $wt = urldecode($m[2]);
+        if ($method === 'GET') {
+            $metricsCtrl->milestones($code, $wt);
+        } elseif ($method === 'PUT') {
+            $metricsCtrl->updateMilestones($code, $wt, $body);
+        } else {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+        }
+        exit;
+    }
+    // /metrics/project-card/{code}/process/{wt} — MUST come before /project-card/{code}
+    if (($method === 'GET' || $method === 'PUT') && preg_match('#^/metrics/project-card/(.+)/process/(.+)$#u', $path, $m)) {
+        if ($method === 'PUT') {
+            $metricsCtrl->updateProcessCard(urldecode($m[1]), urldecode($m[2]), $body);
+        } else {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+        }
+        exit;
+    }
+    if (preg_match('#^/metrics/project-card/(.+)$#u', $path, $m)) {
+        $code = urldecode($m[1]);
+        if ($method === 'GET') {
+            $metricsCtrl->projectCard($code);
+        } elseif ($method === 'PUT') {
+            $metricsCtrl->updateProjectCard($code, $body);
+        } else {
+            http_response_code(405);
+            echo json_encode(['error' => 'Method not allowed']);
+        }
+        exit;
+    }
+    if ($method === 'GET' && preg_match('#^/metrics/project/(.+)$#u', $path, $m)) {
+        $metricsCtrl->project(urldecode($m[1]));
         exit;
     }
 

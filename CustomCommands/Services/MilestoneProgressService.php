@@ -271,7 +271,7 @@ class MilestoneProgressService
             
             // Get last estimate date and efficiency
             $stmt = $conn->prepare("
-                SELECT estimated_at, plan_hours_at_estimate, efficiency_at_estimate 
+                SELECT estimated_at, estimated_percent, plan_hours_at_estimate, efficiency_at_estimate 
                 FROM milestone_progress_estimates 
                 WHERE project_code = ? AND milestone_name = ? AND work_type = ?
             ");
@@ -284,6 +284,12 @@ class MilestoneProgressService
             if (!$lastEstimate) {
                 error_log("MilestoneProgressService: No previous estimate for {$projectCode}/{$milestoneName} ({$workType}), showing survey");
                 return true;
+            }
+            
+            // Milestone already confirmed at 100% — no survey needed
+            if ((int)$lastEstimate['estimated_percent'] >= 100) {
+                error_log("MilestoneProgressService: {$projectCode}/{$milestoneName} ({$workType}) already at 100%, skip survey");
+                return false;
             }
             
             // Get CURRENT plan and fact hours (always fresh data)
@@ -375,6 +381,11 @@ class MilestoneProgressService
      */
     public function getMilestoneFactHours(string $projectCode, string $milestoneName, string $workType = 'ПНР'): float
     {
+        // Legacy name aliases for tabel message matching (old entries have old names)
+        $nameAliases = [
+            'ИИ на рабочей среде' => 'Режимная наладка',
+        ];
+
         try {
             $conn = $this->databaseService->getConnection();
             
@@ -396,23 +407,45 @@ class MilestoneProgressService
                 // PNR: original logic
                 // Milestones that are recorded as standalone activities (without "Работы по графику" wrapper)
                 $standaloneActivityMilestones = ['ИИ на рабочей среде', 'Комплексное опробование'];
+                $alias = $nameAliases[$milestoneName] ?? null;
                 
                 if (in_array($milestoneName, $standaloneActivityMilestones)) {
-                    // For standalone milestones - also match standalone activity name
-                    $stmt = $conn->prepare("
-                        SELECT COUNT(DISTINCT ot.id) as days_count
-                        FROM ozna_tabel ot
-                        INNER JOIN ozna_data od ON ot.user_id = od.user_id
-                        WHERE ot.message LIKE CONCAT('%', ?, '%')
-                        AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
-                             OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
-                             OR ot.message LIKE CONCAT('%', ?, '%'))
-                        AND ot.message NOT LIKE '%Этап наладки завершен%'
-                        AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
-                        AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
-                    ");
-                    $stmt->bind_param('ssss', $projectCode, $milestoneName, $milestoneName, $milestoneName);
+                    if ($alias) {
+                        // Match both current name and legacy alias in tabel messages
+                        $stmt = $conn->prepare("
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%'))
+                            AND ot.message NOT LIKE '%Этап наладки завершен%'
+                            AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ");
+                        $stmt->bind_param('sssssss', $projectCode, $milestoneName, $milestoneName, $milestoneName, $alias, $alias, $alias);
+                    } else {
+                        // For standalone milestones - also match standalone activity name
+                        $stmt = $conn->prepare("
+                            SELECT COUNT(DISTINCT ot.id) as days_count
+                            FROM ozna_tabel ot
+                            INNER JOIN ozna_data od ON ot.user_id = od.user_id
+                            WHERE ot.message LIKE CONCAT('%', ?, '%')
+                            AND (ot.message LIKE CONCAT('%Работы по графику%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%Формирование ИД%', ?, '%')
+                                 OR ot.message LIKE CONCAT('%', ?, '%'))
+                            AND ot.message NOT LIKE '%Этап наладки завершен%'
+                            AND ot.message NOT LIKE '%Подтвердить достижение вехи%'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') = 'Пусконаладка'
+                            AND JSON_EXTRACT(od.data, '$.functional_direction') != 'Тестировщик'
+                        ");
+                        $stmt->bind_param('ssss', $projectCode, $milestoneName, $milestoneName, $milestoneName);
+                    }
                 } else {
                     // Standard milestones - match "Работы по графику" and "Формирование ИД"
                     $stmt = $conn->prepare("
@@ -601,25 +634,86 @@ class MilestoneProgressService
     }
     
     /**
-     * Get total PNR efficiency for a project
-     * Weighted average of all milestones with estimates
+     * Get total PNR forecast efficiency for a project
+     * Uses forecast formula: stagePlan / (stageFact + forecastRemaining) * 100
+     * Projects remaining work based on current pace per milestone
      */
     public function getPNRTotalEfficiency(string $projectCode): ?float
     {
         try {
             $conn = $this->databaseService->getConnection();
             
+            // Get all PNR milestones with plan
             $stmt = $conn->prepare("
-                SELECT AVG(efficiency_at_estimate) as avg_efficiency
-                FROM milestone_progress_estimates 
-                WHERE project_code = ? AND work_type = 'ПНР' AND efficiency_at_estimate IS NOT NULL
+                SELECT milestone_name, planned_hours, is_not_applicable, unit
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ПНР'
             ");
             $stmt->bind_param('s', $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
-            $row = $result->fetch_assoc();
             
-            return $row['avg_efficiency'] ? round($row['avg_efficiency'], 1) : null;
+            $milestonesPlan = [];
+            while ($row = $result->fetch_assoc()) {
+                if ($row['is_not_applicable']) continue;
+                $plan = (float)$row['planned_hours'];
+                if ($plan <= 0) continue;
+                if ($row['unit'] === 'hours') {
+                    $plan = ceil($plan / 8);
+                }
+                $milestonesPlan[$row['milestone_name']] = $plan;
+            }
+            
+            if (empty($milestonesPlan)) return null;
+            
+            // Get estimates
+            $estimates = $this->getProjectMilestoneEstimates($projectCode, 'ПНР');
+            
+            $stagePlanTime = 0;
+            $stageFactTime = 0;
+            $forecastRemainingActualDays = 0;
+            
+            foreach ($milestonesPlan as $name => $plan) {
+                $stagePlanTime += $plan;
+                
+                $factHours = $this->getMilestoneFactHours($projectCode, $name, 'ПНР');
+                $fact = $factHours / 8; // Convert hours to days
+                $stageFactTime += $fact;
+                
+                $estimate = $estimates[$name] ?? null;
+                $estimatedPercent = $estimate ? (float)$estimate['estimated_percent'] : 0;
+                
+                if ($estimatedPercent >= 100) {
+                    // Confirmed/completed - no remaining work to forecast
+                } elseif ($fact > 0 && $estimate) {
+                    $effectiveDone = ($estimatedPercent * $plan) / 100;
+                    $remainingPlan = $plan - $effectiveDone;
+                    if ($effectiveDone > 0 && $remainingPlan > 0) {
+                        $milestoneEfficiency = $effectiveDone / $fact;
+                        $forecastRemainingActualDays += $remainingPlan / $milestoneEfficiency;
+                    } elseif ($remainingPlan > 0) {
+                        $forecastRemainingActualDays += $remainingPlan;
+                    }
+                } elseif ($fact > 0) {
+                    // Has fact but no estimate - conservative: min(fact, plan)
+                    $effectiveDone = min($fact, $plan);
+                    $remainingPlan = $plan - $effectiveDone;
+                    if ($effectiveDone > 0 && $remainingPlan > 0) {
+                        $milestoneEfficiency = $effectiveDone / $fact;
+                        $forecastRemainingActualDays += $remainingPlan / $milestoneEfficiency;
+                    } elseif ($remainingPlan > 0) {
+                        $forecastRemainingActualDays += $remainingPlan;
+                    }
+                } else {
+                    // Not started - assume 100% efficiency
+                    $forecastRemainingActualDays += $plan;
+                }
+            }
+            
+            $factForecastStage = $stageFactTime + $forecastRemainingActualDays;
+            if ($factForecastStage <= 0 || $stagePlanTime <= 0) return null;
+            
+            return round(($stagePlanTime / $factForecastStage) * 100, 1);
             
         } catch (\Exception $e) {
             error_log("MilestoneProgressService::getPNRTotalEfficiency error: " . $e->getMessage());
@@ -628,25 +722,86 @@ class MilestoneProgressService
     }
     
     /**
-     * Get total SMR efficiency for a project
-     * Weighted average of all SMR sub-milestones with estimates
+     * Get total SMR forecast efficiency for a project
+     * Uses forecast formula: stagePlan / (stageFact + forecastRemaining) * 100
+     * Projects remaining work based on current pace per sub-milestone
      */
     public function getSMRTotalEfficiency(string $projectCode): ?float
     {
         try {
             $conn = $this->databaseService->getConnection();
             
+            // Get all SMR milestones with plan
             $stmt = $conn->prepare("
-                SELECT AVG(efficiency_at_estimate) as avg_efficiency
-                FROM milestone_progress_estimates 
-                WHERE project_code = ? AND work_type = 'ШМР' AND efficiency_at_estimate IS NOT NULL
+                SELECT milestone_name, planned_hours, is_not_applicable, unit
+                FROM project_milestones
+                WHERE project_code = ? AND work_type = 'ШМР'
             ");
             $stmt->bind_param('s', $projectCode);
             $stmt->execute();
             $result = $stmt->get_result();
-            $row = $result->fetch_assoc();
             
-            return $row['avg_efficiency'] ? round($row['avg_efficiency'], 1) : null;
+            $milestonesPlan = [];
+            while ($row = $result->fetch_assoc()) {
+                if ($row['is_not_applicable']) continue;
+                $plan = (float)$row['planned_hours'];
+                if ($plan <= 0) continue;
+                if ($row['unit'] === 'hours') {
+                    $plan = ceil($plan / 8);
+                }
+                $milestonesPlan[$row['milestone_name']] = $plan;
+            }
+            
+            if (empty($milestonesPlan)) return null;
+            
+            // Get estimates
+            $estimates = $this->getProjectMilestoneEstimates($projectCode, 'ШМР');
+            
+            $stagePlanTime = 0;
+            $stageFactTime = 0;
+            $forecastRemainingActualDays = 0;
+            
+            foreach ($milestonesPlan as $name => $plan) {
+                $stagePlanTime += $plan;
+                
+                $factHours = $this->getMilestoneFactHours($projectCode, $name, 'ШМР');
+                $fact = $factHours / 8; // Convert hours to days
+                $stageFactTime += $fact;
+                
+                $estimate = $estimates[$name] ?? null;
+                $estimatedPercent = $estimate ? (float)$estimate['estimated_percent'] : 0;
+                
+                if ($estimatedPercent >= 100) {
+                    // Confirmed/completed - no remaining work to forecast
+                } elseif ($fact > 0 && $estimate) {
+                    $effectiveDone = ($estimatedPercent * $plan) / 100;
+                    $remainingPlan = $plan - $effectiveDone;
+                    if ($effectiveDone > 0 && $remainingPlan > 0) {
+                        $milestoneEfficiency = $effectiveDone / $fact;
+                        $forecastRemainingActualDays += $remainingPlan / $milestoneEfficiency;
+                    } elseif ($remainingPlan > 0) {
+                        $forecastRemainingActualDays += $remainingPlan;
+                    }
+                } elseif ($fact > 0) {
+                    // Has fact but no estimate - conservative: min(fact, plan)
+                    $effectiveDone = min($fact, $plan);
+                    $remainingPlan = $plan - $effectiveDone;
+                    if ($effectiveDone > 0 && $remainingPlan > 0) {
+                        $milestoneEfficiency = $effectiveDone / $fact;
+                        $forecastRemainingActualDays += $remainingPlan / $milestoneEfficiency;
+                    } elseif ($remainingPlan > 0) {
+                        $forecastRemainingActualDays += $remainingPlan;
+                    }
+                } else {
+                    // Not started - assume 100% efficiency
+                    $forecastRemainingActualDays += $plan;
+                }
+            }
+            
+            $factForecastStage = $stageFactTime + $forecastRemainingActualDays;
+            if ($factForecastStage <= 0 || $stagePlanTime <= 0) return null;
+            
+            return round(($stagePlanTime / $factForecastStage) * 100, 1);
             
         } catch (\Exception $e) {
             error_log("MilestoneProgressService::getSMRTotalEfficiency error: " . $e->getMessage());

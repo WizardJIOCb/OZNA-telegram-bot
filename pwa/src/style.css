@@ -389,6 +389,17 @@ html, body {
   font-style: italic;
 }
 
+.milestone-confirm-notice {
+  background: #fff3e0;
+  border: 1px solid #ffb74d;
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 12px 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: #e65100;
+}
+
 /* Breadcrumbs */
 .breadcrumbs {
   display: flex;

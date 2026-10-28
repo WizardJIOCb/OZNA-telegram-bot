@@ -49,9 +49,13 @@ class AdminHandler implements CallbackHandlerInterface
         // Exclude acc_lvl_* callbacks as they should be handled by AccessLevelHandler
         $isAccessLevelCallback = str_starts_with($callbackData, 'acc_lvl_');
         
+        // Support pagination callbacks for admin project list and delete project menu
+        $isAdminProjectPagination = str_starts_with($callbackData, 'proj_admin_list_page_') || 
+                                     str_starts_with($callbackData, 'proj_delete_list_page_');
+        
         // NOTE: We exclude 'category_Главное' from this handler to let MainMenuHandler handle it
         // This ensures consistent main menu handling for all users regardless of access level
-        $canHandle = !$isAccessLevelCallback && !$equalsCategoryMain && ($startsWithCategoryAdmin || $startsWithCategoryAdm || $startsWithAdmReq || $isAdmReqCallback);
+        $canHandle = !$isAccessLevelCallback && !$equalsCategoryMain && ($startsWithCategoryAdmin || $startsWithCategoryAdm || $startsWithAdmReq || $isAdmReqCallback || $isAdminProjectPagination);
         
         // Special case: Allow 'category_Админка_ЗапросДоступ' to be handled by AdminHandler
         // This ensures that access requests from profile are handled correctly
@@ -186,6 +190,12 @@ class AdminHandler implements CallbackHandlerInterface
         // Управление проектами
         if (str_starts_with($category, 'Админка_Проекты')) {
             error_log("AdminHandler: handling project management for user: {$userId}");
+            return $this->handleProjectManagement($callbackQuery, $category, $conversation);
+        }
+        
+        // Pagination for admin project list and delete project menu
+        if (str_starts_with($category, 'proj_admin_list_page_') || str_starts_with($category, 'proj_delete_list_page_')) {
+            error_log("AdminHandler: handling project management pagination for user: {$userId}");
             return $this->handleProjectManagement($callbackQuery, $category, $conversation);
         }
 

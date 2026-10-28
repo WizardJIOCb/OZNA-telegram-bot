@@ -673,7 +673,7 @@ class MessageService
     }
 
     /**
-     * Create absence type selection keyboard (Больничный / Отпуск)
+     * Create absence type selection keyboard (Больничный / Отпуск / Донорский день)
      */
     public function createAbsenceTypeKeyboard(): array
     {
@@ -683,6 +683,9 @@ class MessageService
             ],
             [
                 ['text' => '🏖 Отпуск', 'callback_data' => 'category_Табель_Отсутствие_Отпуск']
+            ],
+            [
+                ['text' => '🩸 Донорский день', 'callback_data' => 'category_Табель_Отсутствие_Донорский']
             ],
             [
                 ['text' => '⬅️ Вернуться в табель', 'callback_data' => 'category_Табель']
