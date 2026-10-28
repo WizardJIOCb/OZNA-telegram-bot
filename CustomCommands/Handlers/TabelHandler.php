@@ -251,6 +251,7 @@ class TabelHandler implements CallbackHandlerInterface
                      str_starts_with($callbackData, 'ШМР_') ||  // Supervision milestone/schedule callbacks
                      str_starts_with($callbackData, 'cat_supervision_') ||  // Alternative supervision callbacks
                      str_starts_with($callbackData, 'cat_РЁРњР _') ||  // Corrupted supervision callbacks
+                     str_starts_with($callbackData, 'tabel_proj_page_') ||  // Pagination callbacks
                      $callbackData === 'новое_прочее_yes' ||
                      $callbackData === 'cat_ТабЭлОб_Проч_yes' ||
                      $callbackData === 'cat_ТабВентОтопл' ||
@@ -1099,6 +1100,42 @@ class TabelHandler implements CallbackHandlerInterface
         }
         error_log("TabelHandler: DEBUG - isActivityConfirmation returned FALSE");
 
+        // Handle project selection pagination for tabel
+        if (str_starts_with($category, 'tabel_proj_page_')) {
+            $page = (int)str_replace('tabel_proj_page_', '', $category);
+            if ($page < 1) $page = 1;
+            
+            // Get the stored date and work type flags to recreate the same context
+            $date = $conversation->notes['tabel_data'] ?? date('d.m.Y');
+            $isSupervision = $conversation->notes['is_supervision'] ?? false;
+            $isCommissioning = $conversation->notes['is_commissioning'] ?? false;
+            $isMobileBrigade = $conversation->notes['is_mobile_brigade'] ?? false;
+            
+            // Determine the appropriate text based on work type
+            if ($isSupervision) {
+                $text = "<b>🔧 Табель Шеф-монтаж за {$date}, выбор проекта</b>";
+            } elseif ($isCommissioning) {
+                $text = "<b>⚙️ Табель Пусконаладка за {$date}, выбор проекта</b>";
+            } elseif ($isMobileBrigade) {
+                $text = "<b>👷‍♂️ Табель Мобильная бригада за {$date}, выбор проекта</b>";
+            } else {
+                $text = "<b>Табель за {$date}, выбор проекта</b>";
+            }
+            
+            $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, false, $page, 33);
+            
+            // Extract messageId for delete+send effect
+            $messageId = $callbackQuery->getMessage()->getMessageId();
+            return $this->messageService->sendOrEditMessage(
+                $chatId, 
+                $text, 
+                $keyboard,
+                $messageId,
+                'HTML',
+                true // Delete old message and send new for clean effect
+            );
+        }
+        
         // DEBUG: Log unhandled category before routing to handleOtherWorkTypes
         error_log("🎯 DEBUG: UNHANDLED CATEGORY: '{$category}' - routing to handleOtherWorkTypes");
         
@@ -1906,6 +1943,10 @@ class TabelHandler implements CallbackHandlerInterface
     private function handleMainTabel(string $chatId, ?int $messageId = null): ServerResponse
     {
         $keyboard = $this->messageService->createWorkTypeKeyboard();
+        // Add the back to main menu button
+        $keyboard[] = [
+            ['text' => '⬅️ Назад в главное меню', 'callback_data' => 'category_Помощь']
+        ];
         $text = '<b>Выберите вид работ</b>';
         $text = $this->ensureUtf8Encoding($text);
         // Use delete+send for clean effect (last param = true)
@@ -2016,10 +2057,12 @@ class TabelHandler implements CallbackHandlerInterface
                     $conversation->notes['is_supervision'] = false;
                     $conversation->notes['is_current_activity'] = false;
                     $conversation->notes['is_mobile_brigade'] = false;
+                    // Store date for pagination
+                    $conversation->notes['tabel_data'] = $date;
                     $conversation->update();
                     
                     $text = "<b>⚙️ Табель Пусконаладка за {$date}, выбор проекта</b>";
-                    $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
+                    $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
                     // Extract messageId for delete+send effect
                     $messageId = $callbackQuery->getMessage()->getMessageId();
                     return $this->messageService->sendOrEditMessage(
@@ -2037,10 +2080,12 @@ class TabelHandler implements CallbackHandlerInterface
                 $conversation->notes['is_commissioning'] = false;
                 $conversation->notes['is_current_activity'] = false;
                 $conversation->notes['is_mobile_brigade'] = false;
+                // Store date for pagination
+                $conversation->notes['tabel_data'] = $date;
                 $conversation->update();
                 
                 $text = "<b>🔧 Табель Шеф-монтаж за {$date}, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
                 // Extract messageId for delete+send effect
                 $messageId = $callbackQuery->getMessage()->getMessageId();
                 return $this->messageService->sendOrEditMessage(
@@ -2058,11 +2103,13 @@ class TabelHandler implements CallbackHandlerInterface
                 $conversation->notes['is_commissioning'] = false;
                 $conversation->notes['is_supervision'] = false;
                 $conversation->notes['is_mobile_brigade'] = true;
+                // Store date for pagination
+                $conversation->notes['tabel_data'] = $date;
                 $conversation->update();
                 error_log("TabelHandler: mobile brigade flag set to true");
                 
                 $text = "<b>👷‍♂️ Табель Мобильная бригада за {$date}, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
                 // Extract messageId for delete+send effect
                 $messageId = $callbackQuery->getMessage()->getMessageId();
                 return $this->messageService->sendOrEditMessage(
@@ -2080,12 +2127,14 @@ class TabelHandler implements CallbackHandlerInterface
                 $conversation->notes['is_commissioning'] = false;
                 $conversation->notes['is_supervision'] = false;
                 $conversation->notes['is_mobile_brigade'] = true;
+                // Store date for pagination
+                $conversation->notes['tabel_data'] = $date;
                 $conversation->update();
                 error_log("TabelHandler: mobile brigade flag set to true (default)");
                 
                 $text = "<b>Табель за {$date}, выбор проекта</b>";
                 
-                $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
                 // Extract messageId for delete+send effect
                 $messageId = $callbackQuery->getMessage()->getMessageId();
                 return $this->messageService->sendOrEditMessage(
@@ -7776,7 +7825,7 @@ class TabelHandler implements CallbackHandlerInterface
             
             // Show project selection
             $text = "<b>Табель - Простой, выбор проекта</b>";
-            $keyboard = $this->messageService->createProjectSelectionKeyboard($callbackQuery->getFrom()->getId());
+            $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($callbackQuery->getFrom()->getId(), false, 1, 33);
             // Extract messageId for delete+send effect
             $messageId = null;
             $message = $callbackQuery->getMessage();
@@ -8075,7 +8124,7 @@ class TabelHandler implements CallbackHandlerInterface
             ]);
             $callbackQuery = new \Longman\TelegramBot\Entities\CallbackQuery([
                 'id' => '1',
-                'from' => ['id' => $conversation->user_id ?? 1, 'is_bot' => false, 'first_name' => 'User'],
+                'from' => ['id' => $conversation->getUserId() ?? 1, 'is_bot' => false, 'first_name' => 'User'],
                 'message' => $mockMessage,
                 'data' => $category
             ]);
@@ -8555,7 +8604,7 @@ class TabelHandler implements CallbackHandlerInterface
             $conversation->update();
             
             // VERIFICATION: Re-create conversation to verify storage
-            $userId = $conversation->user_id ?? 0;
+            $userId = $conversation->getUserId() ?? 0;
             $verifyConversation = new Conversation($userId, $chatId, '/callback');
             $verifyCustomText = $verifyConversation->notes['prochee_custom_text'] ?? 'NOT_FOUND';
             error_log("TabelHandler: VERIFICATION - Stored and re-read custom text: '{$verifyCustomText}'");
@@ -8630,7 +8679,7 @@ class TabelHandler implements CallbackHandlerInterface
                 $conversation->update();
                 
                 // Get user ID from conversation (since it's not in method parameters)
-                $userId = $conversation->user_id ?? 0;
+                $userId = $conversation->getUserId() ?? 0;
                 
                 if (!$userId) {
                     error_log("🚨 IDLE FLOW: No userId found in conversation");
@@ -8639,7 +8688,7 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 // Show project selection
                 $text = "<b>Табель - Простой, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboard($userId);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, false, 1, 33);
                 return $this->messageService->sendMessage($chatId, $text, $keyboard);
             }
             
@@ -8916,7 +8965,7 @@ class TabelHandler implements CallbackHandlerInterface
                 
                 // Continue with project selection for other work types
                 $text = "<b>Табель за {$userInput}, выбор проекта</b>";
-                $keyboard = $this->messageService->createProjectSelectionKeyboard($userId);
+                $keyboard = $this->messageService->createProjectSelectionKeyboardWithPagination($userId, false, 1, 33);
                 return $this->messageService->sendMessage($chatId, $text, $keyboard);
             }
         }

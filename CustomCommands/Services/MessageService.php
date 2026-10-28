@@ -97,26 +97,10 @@ class MessageService
             }
             
             error_log("MessageService sendMessage data: " . json_encode($data, JSON_UNESCAPED_UNICODE));
-
-            $result = Request::sendMessage($data);
-            
-            error_log("MessageService sendMessage result: " . (is_object($result) && method_exists($result, 'isOk') ? ($result->isOk() ? 'success' : 'failed') : 'unknown'));
-            
-            if (is_object($result) && method_exists($result, 'isOk') && !$result->isOk()) {
-                error_log("MessageService sendMessage error: " . $result->getDescription());
-                error_log("MessageService sendMessage error code: " . $result->getErrorCode());
-            }
-            
-            error_log("MessageService sendMessage END");
-            return $result;
+            return Request::sendMessage($data);
             
         } catch (Exception $e) {
-            error_log("MessageService sendMessage EXCEPTION: " . $e->getMessage());
-            error_log("MessageService sendMessage EXCEPTION trace: " . $e->getTraceAsString());
-            throw $e;
-        } catch (Error $e) {
             error_log("MessageService sendMessage ERROR: " . $e->getMessage());
-            error_log("MessageService sendMessage ERROR trace: " . $e->getTraceAsString());
             throw $e;
         }
     }
@@ -187,68 +171,6 @@ class MessageService
     }
 
     /**
-     * Send message with reply keyboard (persistent menu)
-     */
-    public function sendMessageWithReplyKeyboard(string $chatId, string $text, array $keyboard, string $parseMode = 'HTML'): ServerResponse
-    {
-        try {
-            error_log("MessageService sendMessageWithReplyKeyboard START for chatId: {$chatId}");
-            error_log("MessageService sendMessageWithReplyKeyboard text: " . mb_substr($text, 0, 100) . "...");
-            if ($keyboard) {
-                error_log("MessageService sendMessageWithReplyKeyboard keyboard: " . json_encode($keyboard, JSON_UNESCAPED_UNICODE));
-            }
-            
-            // Убеждаемся, что текст в правильной кодировке UTF-8
-            if (function_exists('mb_convert_encoding')) {
-                $text = mb_convert_encoding($text, 'UTF-8', 'auto');
-            } else {
-                // Fallback for systems without mbstring
-                $text = utf8_encode($text);
-            }
-            
-            $data = [
-                'chat_id' => $chatId,
-                'text' => $text,
-                'disable_web_page_preview' => true,
-                'parse_mode' => $parseMode,
-            ];
-
-            if ($keyboard) {
-                // Убеждаемся, что клавиатура в правильной кодировке UTF-8
-                // Преобразуем все строки в клавиатуре в UTF-8
-                $keyboard = $this->ensureUtf8Encoding($keyboard);
-                
-                // Для reply-клавиатур передаем массив напрямую как keyboard
-                $data['reply_markup'] = json_encode(['keyboard' => $keyboard, 'resize_keyboard' => true], JSON_UNESCAPED_UNICODE);
-                error_log("MessageService sendMessageWithReplyKeyboard keyboard JSON: " . $data['reply_markup']);
-            }
-            
-            error_log("MessageService sendMessageWithReplyKeyboard data: " . json_encode($data, JSON_UNESCAPED_UNICODE));
-
-            $result = Request::sendMessage($data);
-            
-            error_log("MessageService sendMessageWithReplyKeyboard result: " . (is_object($result) && method_exists($result, 'isOk') ? ($result->isOk() ? 'success' : 'failed') : 'unknown'));
-            
-            if (is_object($result) && method_exists($result, 'isOk') && !$result->isOk()) {
-                error_log("MessageService sendMessageWithReplyKeyboard error: " . $result->getDescription());
-                error_log("MessageService sendMessageWithReplyKeyboard error code: " . $result->getErrorCode());
-            }
-            
-            error_log("MessageService sendMessageWithReplyKeyboard END");
-            return $result;
-            
-        } catch (Exception $e) {
-            error_log("MessageService sendMessageWithReplyKeyboard EXCEPTION: " . $e->getMessage());
-            error_log("MessageService sendMessageWithReplyKeyboard EXCEPTION trace: " . $e->getTraceAsString());
-            throw $e;
-        } catch (Error $e) {
-            error_log("MessageService sendMessageWithReplyKeyboard ERROR: " . $e->getMessage());
-            error_log("MessageService sendMessageWithReplyKeyboard ERROR trace: " . $e->getTraceAsString());
-            throw $e;
-        }
-    }
-
-    /**
      * Delete message and send a new one
      * This creates a "clean" effect by removing the old message first
      * @param int $delayMs - Delay in milliseconds between delete and send (default: 300ms for visible animation)
@@ -302,16 +224,59 @@ class MessageService
         }
     }
 
+
+    /**
+     * Send message with reply keyboard
+     */
+    public function sendMessageWithReplyKeyboard(string $chatId, string $text, ?array $replyKeyboard = null): ServerResponse
+    {
+        error_log("MessageService: sendMessageWithReplyKeyboard called for chatId: {$chatId}");
+        error_log("MessageService: message text: '" . substr($text, 0, 50) . "...'");
+        
+        if ($replyKeyboard) {
+            error_log("MessageService: reply keyboard has " . count($replyKeyboard) . " rows");
+            foreach ($replyKeyboard as $rowIndex => $row) {
+                $rowText = "";
+                foreach ($row as $buttonIndex => $button) {
+                    $rowText .= "'" . $button['text'] . "'";
+                    if ($buttonIndex < count($row) - 1) $rowText .= ", ";
+                }
+                error_log("MessageService: reply keyboard row {$rowIndex}: {$rowText}");
+            }
+        } else {
+            error_log("MessageService: no reply keyboard provided");
+        }
+        
+        $data = [
+            'chat_id' => $chatId,
+            'text' => $this->ensureUtf8Encoding($text),
+            'disable_web_page_preview' => true,
+            'parse_mode' => 'HTML',
+        ];
+
+        // Add reply keyboard if provided
+        if ($replyKeyboard) {
+            $replyKeyboard = $this->ensureUtf8Encoding($replyKeyboard);
+            $data['reply_markup'] = json_encode(['keyboard' => $replyKeyboard, 'resize_keyboard' => true], JSON_UNESCAPED_UNICODE);
+        }
+
+        return Request::sendMessage($data);
+    }
+
     /**
      * Ensure all strings in keyboard array are UTF-8 encoded
      */
-    private function ensureUtf8Encoding(array $data): array
+    private function ensureUtf8Encoding($data)
     {
-        foreach ($data as $key => $value) {
-            if (is_string($value)) {
-                $data[$key] = mb_convert_encoding($value, 'UTF-8', 'auto');
-            } elseif (is_array($value)) {
-                $data[$key] = $this->ensureUtf8Encoding($value);
+        if (is_string($data)) {
+            return mb_convert_encoding($data, 'UTF-8', 'auto');
+        } elseif (is_array($data)) {
+            foreach ($data as $key => $value) {
+                if (is_string($value)) {
+                    $data[$key] = mb_convert_encoding($value, 'UTF-8', 'auto');
+                } elseif (is_array($value)) {
+                    $data[$key] = $this->ensureUtf8Encoding($value);
+                }
             }
         }
         return $data;
@@ -535,6 +500,147 @@ class MessageService
     }
 
     /**
+     * Create inline keyboard for project selection with pagination
+     * 
+     * @param int|null $userId User ID to get personal projects for
+     * @param bool $usePersonalList If true, use report_projects list; if false, use all projects + pending
+     * @param int $page Page number for pagination
+     * @param int $perPage Number of projects per page
+     * @return array Keyboard array
+     */
+    public function createProjectSelectionKeyboardWithPagination(?int $userId = null, bool $usePersonalList = true, int $page = 1, int $perPage = 33): array
+    {
+        $projects = [];
+        $pendingProjects = [];
+        
+        // If userId is provided, determine which project list to use
+        if ($userId !== null) {
+            try {
+                // ALWAYS get user's pending projects from database
+                $databaseService = new DatabaseService();
+                $pendingProjectsData = $databaseService->getUserProjectsWithPending($userId);
+                
+                // Extract pending projects (status = 'pending')
+                foreach ($pendingProjectsData as $project) {
+                    if ($project['status'] === 'pending') {
+                        $pendingProjects[] = $project['project_code'];
+                    }
+                }
+                
+                error_log("MessageService: User {$userId} has " . count($pendingProjects) . " pending projects: " . json_encode($pendingProjects));
+                
+                // For personal report list - use report_projects from user data
+                if ($usePersonalList) {
+                    $userData = $databaseService->getUserData($userId);
+                    $personalProjects = $userData['report_projects'] ?? [];
+                    
+                    error_log("MessageService: createProjectSelectionKeyboardWithPagination for user {$userId} (personal list)");
+                    error_log("MessageService: user's personal projects: " . json_encode($personalProjects));
+                    
+                    // Use personal projects if they exist
+                    if (!empty($personalProjects)) {
+                        $projects = $personalProjects;
+                        error_log("MessageService: using personal project list with " . count($projects) . " projects");
+                    } else {
+                        error_log("MessageService: user has no personal projects, falling back to all projects");
+                    }
+                } 
+                // For tabel/work entries - use all projects + user's pending projects
+                else {
+                    $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
+                    $projects = $projectSelector->getAllProjects();
+                    
+                    error_log("MessageService: createProjectSelectionKeyboardWithPagination for user {$userId} (all projects)");
+                    error_log("MessageService: got " . count($projects) . " projects from file");
+                }
+                
+            } catch (Exception $e) {
+                error_log("MessageService: Error getting user projects: " . $e->getMessage());
+            }
+        }
+        
+        // Fallback to all projects if no userId provided or no projects found
+        if (empty($projects)) {
+            $projectSelector = new \Longman\TelegramBot\Commands\SystemCommands\Services\ProjectSelector();
+            $projects = $projectSelector->getAllProjects();
+            error_log("MessageService: using all projects list with " . count($projects) . " projects");
+        }
+        
+        // ALWAYS add user's pending projects to the list (if any)
+        if (!empty($pendingProjects)) {
+            foreach ($pendingProjects as $pendingProject) {
+                if (!in_array($pendingProject, $projects)) {
+                    $projects[] = $pendingProject;
+                    error_log("MessageService: Added pending project to list: {$pendingProject}");
+                }
+            }
+            error_log("MessageService: Total projects after adding pending: " . count($projects));
+        }
+        
+        // Apply intelligent sorting to final project list
+        if (!empty($projects)) {
+            // Need to create DatabaseService instance if not already available
+            if (!isset($databaseService)) {
+                $databaseService = new DatabaseService();
+            }
+            $projects = $databaseService->sortProjectsIntelligently($projects);
+            error_log("MessageService: Applied intelligent sorting to " . count($projects) . " projects");
+        }
+        
+        // Calculate pagination
+        $totalProjects = count($projects);
+        $totalPages = (int)ceil($totalProjects / $perPage);
+        $page = max(1, min($page, $totalPages)); // Ensure page is within valid range
+        $offset = ($page - 1) * $perPage;
+        
+        // Get projects for current page
+        $pageProjects = array_slice($projects, $offset, $perPage);
+        
+        error_log("MessageService: Pagination - Total: {$totalProjects}, Page: {$page}/{$totalPages}, PerPage: {$perPage}, Showing: " . count($pageProjects));
+        
+        $keyboard = [];
+        $row = [];
+        
+        foreach ($pageProjects as $index => $project) {
+            $row[] = ['text' => $project, 'callback_data' => "category_Табель_ШифрПроекта_{$project}"];
+            
+            // Каждые 4 кнопки создаем новый ряд
+            if (count($row) == 4 || $index == count($pageProjects) - 1) {
+                $keyboard[] = $row;
+                $row = [];
+            }
+        }
+        
+        // Add pagination buttons if needed
+        if ($totalPages > 1) {
+            $paginationRow = [];
+            
+            // Previous page button
+            if ($page > 1) {
+                $paginationRow[] = ['text' => '◀️ Назад', 'callback_data' => "tabel_proj_page_" . ($page - 1)];
+            }
+            
+            // Page indicator
+            $paginationRow[] = ['text' => "📄 {$page}/{$totalPages}", 'callback_data' => 'noop'];
+            
+            // Next page button
+            if ($page < $totalPages) {
+                $paginationRow[] = ['text' => 'Вперед ▶️', 'callback_data' => "tabel_proj_page_" . ($page + 1)];
+            }
+            
+            $keyboard[] = $paginationRow;
+        }
+        
+        // Add "Back to Main Menu" button at the bottom
+        $keyboard[] = [
+            ['text' => '🏠 Вернуться в главное меню', 'callback_data' => 'main_menu']
+        ];
+        
+        error_log("MessageService: created paginated project keyboard with " . count($keyboard) . " rows");
+        return $keyboard;
+    }
+
+    /**
      * Create inline keyboard for work type selection (main tabel menu)
      */
     public function createWorkTypeKeyboard(): array
@@ -607,11 +713,12 @@ class MessageService
     }
 
     /**
-     * Create main menu reply keyboard (persistent menu)
-     * @param int $userAccessLevel User's access level (optional, defaults to showing all buttons)
+     * Create main menu reply keyboard (persistent menu) for registered users
      */
     public function createMainMenuReplyKeyboard(int $userAccessLevel = 99): array
     {
+        error_log("MessageService: createMainMenuReplyKeyboard called with userAccessLevel: {$userAccessLevel}");
+        
         $keyboard = [
             [
                 ['text' => '📊 Табель'], 
@@ -625,16 +732,28 @@ class MessageService
         
         // Add Adminка button only for users with access level 2 or higher (Admin and above)
         if ($userAccessLevel >= 2) {
+            error_log("MessageService: adding admin button for userAccessLevel: {$userAccessLevel}");
             $keyboard[] = [
                 ['text' => '⚙️ Админка']
             ];
         }
         
-        // Add Project Management button for supervisors and above (access level 2+)
-        if ($userAccessLevel >= 2) {
+        // Add Project Management button only for super admins (access level 4)
+        if ($userAccessLevel >= 4) {
+            error_log("MessageService: adding project management button for userAccessLevel: {$userAccessLevel}");
             $keyboard[] = [
                 ['text' => '🛠️ Управление проектом']
             ];
+        }
+        
+        error_log("MessageService: created reply keyboard with " . count($keyboard) . " rows");
+        foreach ($keyboard as $rowIndex => $row) {
+            $rowText = "";
+            foreach ($row as $buttonIndex => $button) {
+                $rowText .= "'" . $button['text'] . "'";
+                if ($buttonIndex < count($row) - 1) $rowText .= ", ";
+            }
+            error_log("MessageService: reply keyboard row {$rowIndex}: {$rowText}");
         }
         
         return $keyboard;
@@ -678,9 +797,6 @@ class MessageService
             ],
             [
                 ['text' => '🖌️ Малярные работы', 'callback_data' => 'cat_МобБриг_Маляр']
-            ],
-            [
-                ['text' => '📝 Прочая деятельность', 'callback_data' => 'cat_МобБриг_ПрочаяДеят']
             ],
             // СЛУЖЕБНЫЕ АКТИВНОСТИ
             [
@@ -2487,18 +2603,6 @@ class MessageService
             ],
             [
                 ['text' => '⬅️ Назад', 'callback_data' => $backCallback]
-            ]
-        ];
-    }
-
-    /**
-     * Create inline keyboard for notes reminder with button to open project notes
-     */
-    public function createNotesReminderKeyboard(string $context): array
-    {
-        return [
-            [
-                ['text' => '📌 Открыть заметки', 'callback_data' => 'notes_menu_' . $context]
             ]
         ];
     }

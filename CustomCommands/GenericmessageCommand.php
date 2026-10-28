@@ -718,15 +718,15 @@ User ID должен быть числом.',
         error_log("GenericmessageCommand: Handling date input for user {$userId} with text: '{$text}'");
         
         // Check if this is current activity flow - delegate to TabelHandler for proper handling
-        // IMPORTANT: Only delegate if ONLY is_current_activity is true (not other work types)
+        // UPDATED: Delegate to TabelHandler for ALL work types (not just current activity)
         $isCurrentActivity = isset($conversation->notes['is_current_activity']) && $conversation->notes['is_current_activity'];
         $isCommissioning = isset($conversation->notes['is_commissioning']) && $conversation->notes['is_commissioning'];
         $isSupervision = isset($conversation->notes['is_supervision']) && $conversation->notes['is_supervision'];
         $isMobileBrigade = isset($conversation->notes['is_mobile_brigade']) && $conversation->notes['is_mobile_brigade'];
         
-        // Only delegate to TabelHandler if this is EXCLUSIVELY current activity flow
-        if ($isCurrentActivity && !$isCommissioning && !$isSupervision && !$isMobileBrigade) {
-            error_log("GenericmessageCommand: Current activity flow detected (exclusive), delegating to TabelHandler");
+        // Delegate to TabelHandler if ANY work type flag is set (for proper pagination support)
+        if ($isCurrentActivity || $isCommissioning || $isSupervision || $isMobileBrigade) {
+            error_log("GenericmessageCommand: Work type flow detected, delegating to TabelHandler");
             
             // Create required services
             $databaseService = new \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService();

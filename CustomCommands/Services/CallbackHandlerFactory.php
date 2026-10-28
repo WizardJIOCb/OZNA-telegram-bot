@@ -255,6 +255,19 @@ class CallbackHandlerFactory
             return $category;
         }
         
+        // Handle tabel project pagination callbacks (tabel_proj_page_ prefix)
+        if (strpos($callbackData, 'tabel_proj_page_') === 0) {
+            $category = $callbackData; // Return the full callback data as category
+            error_log("CallbackHandlerFactory extracted tabel project pagination category: '{$category}' from callback data: '{$callbackData}'");
+            return $category;
+        }
+        
+        // Handle main_menu callback (return to main menu from pagination)
+        if ($callbackData === 'main_menu') {
+            error_log("CallbackHandlerFactory: detected main_menu callback");
+            return 'main_menu'; // Return as is for MainMenuHandler
+        }
+        
         error_log("CallbackHandlerFactory: No category found in callback data: '{$callbackData}'");
         return '';
     }
@@ -267,6 +280,18 @@ class CallbackHandlerFactory
      */
     private function getDefaultResponse(CallbackQuery $callbackQuery): ServerResponse
     {
+        // Get callback data to check if it's a 'noop' (no-operation) callback
+        $callbackData = $callbackQuery->getData();
+        
+        // For 'noop' callbacks (like pagination page indicator), just answer without showing a message
+        if ($callbackData === 'noop') {
+            error_log("CallbackHandlerFactory: 'noop' callback detected, answering silently");
+            return Request::answerCallbackQuery([
+                'callback_query_id' => $callbackQuery->getId(),
+            ]);
+        }
+        
+        // For other unknown callbacks, show error message
         return Request::sendMessage([
             'chat_id' => $callbackQuery->getMessage()->getChat()->getId(),
             'text' => 'Не выбран пункт меню',

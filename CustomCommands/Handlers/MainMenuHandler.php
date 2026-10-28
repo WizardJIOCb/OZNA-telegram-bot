@@ -9,6 +9,7 @@ use Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService;
 use Longman\TelegramBot\Entities\CallbackQuery;
 use Longman\TelegramBot\Entities\ServerResponse;
 use Longman\TelegramBot\Conversation;
+use Exception;
 
 /**
  * Handler for main menu callback queries
@@ -31,7 +32,8 @@ class MainMenuHandler implements CallbackHandlerInterface
         
         // Handle main menu callback but exclude access request callback
         // Access requests will now be handled by AdminHandler
-        $result = $callbackData === 'category_Главное';
+        // Also handle 'main_menu' callback from pagination return button
+        $result = $callbackData === 'category_Главное' || $callbackData === 'main_menu';
         error_log("MainMenuHandler: canHandle result for '{$callbackData}': " . ($result ? 'true' : 'false'));
         return $result;
     }
@@ -49,7 +51,8 @@ class MainMenuHandler implements CallbackHandlerInterface
         error_log("MainMenuHandler: encoded category: '{$category}'");
 
         // Always show main menu when this callback is triggered
-        if ($category === 'Главное') {
+        // Handle both 'Главное' and 'main_menu' callbacks
+        if ($category === 'Главное' || $category === 'main_menu') {
             error_log("MainMenuHandler: showing main menu for user: {$userId}");
             return $this->showMainMenu($chatId, $userId, $messageId);
         }
@@ -77,6 +80,17 @@ class MainMenuHandler implements CallbackHandlerInterface
      */
     private function showMainMenu(string $chatId, int $userId, int $messageId): ServerResponse
     {
+        // Delete the current message before showing main menu
+        try {
+            $deleteResult = \Longman\TelegramBot\Request::deleteMessage([
+                'chat_id' => $chatId,
+                'message_id' => $messageId
+            ]);
+            error_log("MainMenuHandler: delete message result - " . ($deleteResult->isOk() ? 'success' : 'failed'));
+        } catch (\Exception $e) {
+            error_log("MainMenuHandler: error deleting message: " . $e->getMessage());
+        }
+        
         // Get user access level
         $userAccessLevel = $this->adminService->getUserAccessLevel($userId);
         
