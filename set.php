@@ -5,6 +5,7 @@ require __DIR__ . '/vendor/autoload.php';
 $bot_api_key  = '7902640773:AAF8Vatss8SpAIqUTag9BL6XMQCLMCBrWlQ';
 $bot_username = 'OznaWork_bot';
 $hook_url     = 'https://api.ladyzenko.pro/tg/ozna/hook.php';
+$hook_url     = 'https://api.ladyzenko.ru/tg/ozna/hook.php';
 
 //echo("begin\r\n<br>");
 
