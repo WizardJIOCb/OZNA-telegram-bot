@@ -1,42 +1,88 @@
 #!/bin/bash
-# Скрипт автоматического деплоя бота
-# Замените переменные на ваши данные
+set -e
 
-SERVER_USER="your_user"
-SERVER_HOST="your_server.com"
-SERVER_PATH="/path/to/your/bot"
-LOCAL_PATH="."
+# OZNA PWA Deploy Script
+# Run on the server from the project root directory
+# Usage: bash deploy.sh
 
-echo "=== АВТОМАТИЧЕСКИЙ ДЕПЛОЙ БОТА ==="
-echo "Сервер: $SERVER_USER@$SERVER_HOST"
-echo "Путь: $SERVER_PATH"
+ROOT="/var/www/api.ladyzenko.pro/tg/ozna"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "=== OZNA PWA Deploy ==="
+echo "Target: $ROOT"
 echo ""
 
-# 1. Создаём бэкап данных локально
-echo "1. Создание локального бэкапа..."
-php create_backup.php
+# Check target directory
+if [ ! -d "$ROOT" ]; then
+    echo "ERROR: Directory $ROOT not found"
+    exit 1
+fi
 
-# 2. Создаём бэкап на сервере
-echo "2. Создание бэкапа на сервере..."
-BACKUP_NAME="backup_$(date +%Y-%m-%d_%H-%M-%S)"
-ssh $SERVER_USER@$SERVER_HOST "cp -r $SERVER_PATH/data $SERVER_PATH/${BACKUP_NAME}_data"
+# Check required source files
+for f in "pwa_frontend.b64" "api/index.php" "api/controllers/TabelController.php" "api/data/activity-tree.json"; do
+    if [ ! -f "$SCRIPT_DIR/$f" ]; then
+        echo "ERROR: Source file not found: $SCRIPT_DIR/$f"
+        exit 1
+    fi
+done
 
-# 3. Копируем код
-echo "3. Копирование кода..."
-rsync -avz --exclude='data/' --exclude='backups/' --exclude='.git/' $LOCAL_PATH/ $SERVER_USER@$SERVER_HOST:$SERVER_PATH/
+# 1. Deploy frontend (PWA)
+echo "[1/4] Deploying frontend..."
+APP_DIR="$ROOT/app"
+mkdir -p "$APP_DIR"
+rm -rf "$APP_DIR/assets" "$APP_DIR/icons"
+rm -f "$APP_DIR"/*.js "$APP_DIR"/*.html "$APP_DIR"/*.json "$APP_DIR"/*.png
+cat "$SCRIPT_DIR/pwa_frontend.b64" | base64 -d | tar -xzf - -C "$APP_DIR"
+echo "      Frontend extracted to $APP_DIR"
 
-# 4. Копируем данные отдельно
-echo "4. Копирование данных..."
-scp -r data/ $SERVER_USER@$SERVER_HOST:$SERVER_PATH/
+# 2. Deploy API router
+echo "[2/4] Deploying api/index.php..."
+if [ "$SCRIPT_DIR/api/index.php" != "$ROOT/api/index.php" ]; then
+    cp "$SCRIPT_DIR/api/index.php" "$ROOT/api/index.php"
+else
+    echo "      (source = target, skipping copy)"
+fi
+echo "      Done"
 
-# 5. Устанавливаем права
-echo "5. Установка прав доступа..."
-ssh $SERVER_USER@$SERVER_HOST "chmod 755 $SERVER_PATH/data && chmod 644 $SERVER_PATH/data/*.json"
+# 3. Deploy TabelController
+echo "[3/4] Deploying api/controllers/TabelController.php..."
+if [ "$SCRIPT_DIR/api/controllers/TabelController.php" != "$ROOT/api/controllers/TabelController.php" ]; then
+    cp "$SCRIPT_DIR/api/controllers/TabelController.php" "$ROOT/api/controllers/TabelController.php"
+else
+    echo "      (source = target, skipping copy)"
+fi
+echo "      Done"
 
-# 6. Проверяем результат
-echo "6. Проверка результата..."
-ssh $SERVER_USER@$SERVER_HOST "cd $SERVER_PATH && php check_server_data.php"
+# 4. Deploy activity tree
+echo "[4/4] Deploying api/data/activity-tree.json..."
+if [ "$SCRIPT_DIR/api/data/activity-tree.json" != "$ROOT/api/data/activity-tree.json" ]; then
+    cp "$SCRIPT_DIR/api/data/activity-tree.json" "$ROOT/api/data/activity-tree.json"
+else
+    echo "      (source = target, skipping copy)"
+fi
+echo "      Done"
 
 echo ""
-echo "=== ДЕПЛОЙ ЗАВЕРШЁН ==="
-echo "Бэкап сервера сохранён как: ${BACKUP_NAME}_data"
+echo "=== Deploy complete ==="
+echo ""
+
+# 5. Database migration: rename "Режимная наладка" → "ИИ на рабочей среде" in tabel entries
+echo "[DB] Renaming 'Режимная наладка' → 'ИИ на рабочей среде' in ozna_tabel..."
+php -r "
+\$c = require('$ROOT/api/config.php');
+\$db = new mysqli(\$c['db']['host'], \$c['db']['username'], \$c['db']['password'], \$c['db']['database']);
+if (\$db->connect_error) { echo \"  DB error: \" . \$db->connect_error . \"\n\"; exit(1); }
+\$db->set_charset('utf8mb4');
+\$count = \$db->query(\"SELECT COUNT(*) as cnt FROM ozna_tabel WHERE message LIKE '%Режимная наладка%'\")->fetch_assoc()['cnt'];
+echo \"  Found \$count entries to update\n\";
+if (\$count > 0) {
+    \$db->query(\"UPDATE ozna_tabel SET message = REPLACE(message, 'Режимная наладка', 'ИИ на рабочей среде') WHERE message LIKE '%Режимная наладка%'\");
+    echo \"  Updated \" . \$db->affected_rows . \" rows\n\";
+}
+\$db->close();
+"
+echo "      Done"
+
+echo ""
+echo "IMPORTANT: Users should clear browser site data or re-login"
+echo "to pick up the updated activity tree (cached in localStorage)."

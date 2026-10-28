@@ -15,6 +15,45 @@ mb_internal_encoding('UTF-8');
 // Устанавливаем заголовки для UTF-8
 header('Content-Type: text/html; charset=utf-8');
 
+// Diagnostic: OpCache reset via ?diag=opcache_reset
+if (isset($_GET['diag']) && $_GET['diag'] === 'opcache_reset') {
+    if (function_exists('opcache_reset')) {
+        opcache_reset();
+        echo 'OpCache reset OK';
+    } else {
+        echo 'OpCache not available';
+    }
+    exit;
+}
+
+// Diagnostic: Read recent error log via ?diag=errors
+if (isset($_GET['diag']) && $_GET['diag'] === 'errors') {
+    header('Content-Type: text/plain; charset=utf-8');
+    $logFile = __DIR__ . '/telegram_bot_error.log';
+    $phpLog = ini_get('error_log');
+    echo "Log file: {$logFile}\n";
+    echo "PHP error_log: {$phpLog}\n";
+    echo "Log exists: " . (file_exists($logFile) ? 'yes, size=' . filesize($logFile) : 'no') . "\n\n";
+    if (file_exists($logFile) && filesize($logFile) > 0) {
+        $fp = fopen($logFile, 'r');
+        fseek($fp, max(0, filesize($logFile) - 8000));
+        echo fread($fp, 8000);
+        fclose($fp);
+    } else {
+        // Try PHP error log
+        if ($phpLog && file_exists($phpLog)) {
+            echo "--- PHP error log ---\n";
+            $fp = fopen($phpLog, 'r');
+            fseek($fp, max(0, filesize($phpLog) - 8000));
+            echo fread($fp, 8000);
+            fclose($fp);
+        } else {
+            echo 'No log files found';
+        }
+    }
+    exit;
+}
+
 // Try to load PDO MySQL extension dynamically
 if (!extension_loaded('pdo_mysql')) {
     // Try different possible paths for the extension

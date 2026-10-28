@@ -9,6 +9,9 @@ namespace Longman\TelegramBot\Commands\SystemCommands\Services;
 class TabelEntry
 {
     private array $activityTypeMappings = [
+        // Absence types
+        'Больничный' => '🏥 Больничный',
+        'Отпуск' => '🏖 Отпуск',
         // Standard activity types
         'Дорога' => '🛣️ Дорога',
         'Подготовка' => '🚗 Подготовка к служебной поездке',
@@ -46,6 +49,12 @@ class TabelEntry
         'Общая' => '📊 Общая деятельность',
         // New current activity types
         'УчастиеВЗПИ' => '🏢 Участие в ЗПИ',
+        // ZPI sub-activities (Подактивности ЗПИ)
+        'ЗПИ_ПровШк' => '🏢 Участие в ЗПИ (Проверка/наладка шкафов)',
+        'ЗПИ_НастОб' => '🏢 Участие в ЗПИ (Настройка/наладка оборудования)',
+        'ЗПИ_ФункПров' => '🏢 Участие в ЗПИ (Функциональная проверка систем)',
+        'ЗПИ_КонтрПр' => '🏢 Участие в ЗПИ (Контроль производства)',
+        'ЗПИ_КомисПр' => '🏢 Участие в ЗПИ (Комиссионная приёмка)',
         'РазрПрограммы' => '📝 Разработка программы работ',
         'РазрГрафика' => '📅 Разработка графика работ',
         'ОргДопоставки' => '📦 Организация допоставки',
@@ -62,7 +71,7 @@ class TabelEntry
         'Прочее_ПроектнаяДеятельность_ШМР' => '📝 Прочее (Проектная деятельность)',
         // Commissioning activities ("Отдел ПНР")
         'КомплексноеОпробование' => '⚙️ Комплексное опробование',
-        'РежимнаяНаладка' => '⚙️ Режимная наладка',
+        'РежимнаяНаладка' => '⚙️ ИИ на рабочей среде',
         'ПодготовкаКПоездке' => '📋 Подготовка к служебной поездке',
         'СдачаАвансовогоОтчета' => '💰 Сдача авансового отчета',
         'ОхраннаяСигнализация' => '🚨 Охранная сигнализация',
@@ -231,6 +240,13 @@ class TabelEntry
         'ШМР_МонтПлощ_ПодтВех' => '✅ Этап шеф-монтажа завершен (Монтаж площадок обслуживания)',
         'ШМР_МонтЭлУкр_ПодтВех' => '✅ Этап шеф-монтажа завершен (Монтаж элементов укрытия)',
         'ШМР_СборКровл_ПодтВех' => '✅ Этап шеф-монтажа завершен (Сборка кровли)',
+        // NEW: Level 2 sub-milestone "Подтвердить достижение вехи" - SHORT FORM mappings (under Внутриблочный монтаж)
+        'ШМР_ТехОб_ПодтВех' => '✅ Этап шеф-монтажа завершен (Технологическое оборудование)',
+        'ШМР_ЭлОб_ПодтВех' => '✅ Этап шеф-монтажа завершен (Электрооборудование)',
+        'ШМР_ПожСигн_ПодтВех' => '✅ Этап шеф-монтажа завершен (Пожарная сигнализация)',
+        'ШМР_ОхрСигн_ПодтВех' => '✅ Этап шеф-монтажа завершен (Охранная сигнализация)',
+        'ШМР_Автом_ПодтВех' => '✅ Этап шеф-монтажа завершен (Автоматизация)',
+        'ШМР_ОтоплВент_ПодтВех' => '✅ Этап шеф-монтажа завершен (Отопление и вентиляция)',
         // Warranty works equipment types
         'РабГарантии_ЭлектрОб' => '⚡ Работы по гарантии (Электрооборудование)',
         'РабГарантии_СрИзм' => '📎 Работы по гарантии (Средства измерений)',
@@ -596,6 +612,12 @@ class TabelEntry
             }
         }
         
+        // Для записи по рекламации — добавляем тему рекламации
+        if ($activityType === 'РабГарантии' && !empty($idleReason)) {
+            $activityText .= " ({$idleReason})";
+            error_log("TabelEntry: Added claim subject for РабГарантии, activityText now: '{$activityText}'");
+        }
+        
         // Для Warranty Equipment "Прочее" activities добавляем пользовательское описание
         if ($activityType === 'РабГарантии_Прочее') {
             error_log("TabelEntry: Processing Warranty Equipment Prochee activity");
@@ -672,6 +694,8 @@ class TabelEntry
         $commissioningActivities = [
             'КомплексноеОпробование', 'РежимнаяНаладка', 'ПодготовкаКПоездке', 'СдачаАвансовогоОтчета',
             'Инструктаж', 'Дорога', 'ОхраннаяСигнализация', 'ОтоплениеИВентиляция', 'ТехнологическоеОборудование', 'Метрология',
+            // Warranty claim-based entry
+            'РабГарантии',
             // Mobile brigade standard buttons (use same format as commissioning)
             'Подготовка', 'АвансовыйОтчет',
             // Mobile brigade other activity
@@ -826,7 +850,7 @@ class TabelEntry
         
         // Project activities ("Проектная деятельность") - use new format
         $projectActivities = [
-            'УчастиеВЗПИ', 'РазрПрограммы', 'РазрГрафика', 'ОргДопоставки', 'УчастиеВОПИ', 'ИспОбМаст', 'ШефНаладочныеРаботы', 'Прочее_ПроектнаяДеятельность', 'Прочее_ПроектнаяДеятельность_ШМР'
+            'УчастиеВЗПИ', 'ЗПИ_ПровШк', 'ЗПИ_НастОб', 'ЗПИ_ФункПров', 'ЗПИ_КонтрПр', 'ЗПИ_КомисПр', 'РазрПрограммы', 'РазрГрафика', 'ОргДопоставки', 'УчастиеВОПИ', 'ИспОбМаст', 'ШефНаладочныеРаботы', 'Прочее_ПроектнаяДеятельность', 'Прочее_ПроектнаяДеятельность_ШМР'
         ];
         
         if (in_array($activityType, $projectActivities)) {
@@ -962,6 +986,9 @@ class TabelEntry
             'ШМР_МонтПлощ_РабПоГр', 'ШМР_МонтПлощ_ПодтВех',
             'ШМР_МонтЭлУкр_РабПоГр', 'ШМР_МонтЭлУкр_ПодтВех',
             'ШМР_СборКровл_РабПоГр', 'ШМР_СборКровл_ПодтВех',
+            // NEW: Level 2 sub-milestone ПодтВех (under Внутриблочный монтаж)
+            'ШМР_ТехОб_ПодтВех', 'ШМР_ЭлОб_ПодтВех', 'ШМР_ПожСигн_ПодтВех',
+            'ШМР_ОхрСигн_ПодтВех', 'ШМР_Автом_ПодтВех', 'ШМР_ОтоплВент_ПодтВех',
             // ШМР Technological Equipment Activities - NEW
             'ШМР_МонтажТрубопроводов_РабПоГр', 'ШМР_МонтажТрубопроводов_НеучВОР', 'ШМР_МонтажТрубопроводов_ПодтВех',
             'ШМР_ГидроПневмоИспытания_РабПоГр', 'ШМР_ГидроПневмоИспытания_НеучВОР', 'ШМР_ГидроПневмоИспытания_ПодтВех',
@@ -1307,6 +1334,15 @@ class TabelEntry
             error_log("🚀 PIPELINE DEBUG: About to send controlled project copies");
             $this->sendControlledProjectCopies($userId, $projectCode, $message);
             error_log("🚀 PIPELINE DEBUG: Controlled project copies completed");
+            
+            // Handle manual milestone confirmation (ПодтВех_*) — save 100% estimate with FIO
+            try {
+                require_once __DIR__ . '/MilestoneProgressService.php';
+                $milestoneProgressService = new MilestoneProgressService($this->databaseService);
+                $milestoneProgressService->confirmMilestoneCompletion($projectCode, $activityType, $userId, $fio);
+            } catch (\Exception $e) {
+                error_log("TabelEntry: milestone confirmation failed: " . $e->getMessage());
+            }
         } else {
             error_log("🚀 PIPELINE DEBUG: Database save FAILED - this is the root cause!");
         }
@@ -1323,6 +1359,156 @@ class TabelEntry
         
         error_log("🚀 PIPELINE DEBUG: addEntry returning: " . ($success ? 'true' : 'false'));
         return $success;
+    }
+
+    /**
+     * Add absence entries (Больничный / Отпуск) for a date range.
+     * Creates one DB entry per day and sends ONE group notification.
+     */
+    public function addAbsenceEntries(
+        int $userId,
+        string $fio,
+        string $startDate,
+        string $endDate,
+        string $absenceType,
+        string $chatId
+    ): bool {
+        error_log("=== TabelEntry->addAbsenceEntries CALLED ===");
+        error_log("userId: {$userId}, absenceType: '{$absenceType}', startDate: '{$startDate}', endDate: '{$endDate}'");
+
+        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+
+        // Parse dates
+        $start = \DateTime::createFromFormat('d.m.Y', $startDate);
+        $end = \DateTime::createFromFormat('d.m.Y', $endDate);
+
+        if (!$start || !$end) {
+            error_log("❌ addAbsenceEntries: Failed to parse dates");
+            $this->messageService->sendMessage($chatId, '❌ Ошибка обработки дат.');
+            return false;
+        }
+
+        $dayCount = $start->diff($end)->days + 1;
+        error_log("addAbsenceEntries: Day count: {$dayCount}");
+
+        // Duplicate check: look for existing absence entries for any day in this range
+        $conn = $this->databaseService->getConnection();
+
+        // Use MySQL lock to prevent race conditions
+        $lockKey = "absence_{$userId}_{$absenceType}_{$startDate}_{$endDate}";
+        $lockTimeout = 3;
+        $lockQuery = "SELECT GET_LOCK(?, ?)";
+        $stmt = $conn->prepare($lockQuery);
+        $stmt->bind_param("si", $lockKey, $lockTimeout);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result->fetch_row();
+        $lockAcquired = ($row[0] == 1);
+
+        if (!$lockAcquired) {
+            error_log("⚠️ addAbsenceEntries: Could not acquire lock for '{$lockKey}'");
+            $this->messageService->sendMessage($chatId, "⏳ <b>Запрос уже обрабатывается</b>\n\nПожалуйста, подождите.");
+            return false;
+        }
+
+        try {
+            // Check for duplicates: any existing absence entry for this user in the date range
+            $checkPattern = "%{$emoji}%: {$absenceType}%";
+            // We need to check by message content since dates are stored in the message text
+            // Query all entries for this user and check if any match our date range
+            $current = clone $start;
+            while ($current <= $end) {
+                $dayStr = $current->format('d.m.Y');
+                $dayPattern = "%{$emoji} {$dayStr}: {$absenceType}%";
+                $checkQuery = "SELECT id, dt FROM tg_bot.ozna_tabel WHERE user_id = ? AND message LIKE ?";
+                $checkStmt = $conn->prepare($checkQuery);
+                $checkStmt->bind_param("is", $userId, $dayPattern);
+                $checkStmt->execute();
+                $checkResult = $checkStmt->get_result();
+
+                if ($checkResult->num_rows > 0) {
+                    $existing = $checkResult->fetch_assoc();
+                    $existingDateTime = date('H:i d.m.Y', strtotime($existing['dt']));
+                    error_log("⚠️ DUPLICATE DETECTED: {$absenceType} for {$dayStr}");
+
+                    $errorMessage = "⚠️ <b>Запись уже существует</b>\n\n";
+                    $errorMessage .= "Вы уже отправили запись:\n";
+                    $errorMessage .= "<b>{$emoji} {$absenceType}</b>\n";
+                    $errorMessage .= "за дату: <b>{$dayStr}</b>\n\n";
+                    $errorMessage .= "📅 Время отправки: <b>{$existingDateTime}</b>\n\n";
+                    $errorMessage .= "Если вы допустили ошибку, обратитесь к администратору.";
+                    $this->messageService->sendMessage($chatId, $errorMessage);
+
+                    // Release lock
+                    $releaseStmt = $conn->prepare("SELECT RELEASE_LOCK(?)");
+                    $releaseStmt->bind_param("s", $lockKey);
+                    $releaseStmt->execute();
+                    return false;
+                }
+
+                $current->modify('+1 day');
+            }
+
+            // Save entries for each day
+            $savedCount = 0;
+            $current = clone $start;
+            while ($current <= $end) {
+                $dayStr = $current->format('d.m.Y');
+                $message = sprintf("<b>%s</b>\r\n%s %s: %s", $fio, $emoji, $dayStr, $absenceType);
+
+                $saved = $this->databaseService->addUserTabel($userId, $message);
+                if ($saved) {
+                    $savedCount++;
+                } else {
+                    error_log("❌ addAbsenceEntries: Failed to save entry for {$dayStr}");
+                }
+
+                $current->modify('+1 day');
+            }
+
+            error_log("addAbsenceEntries: Saved {$savedCount}/{$dayCount} entries");
+
+            if ($savedCount === 0) {
+                // Release lock
+                $releaseStmt = $conn->prepare("SELECT RELEASE_LOCK(?)");
+                $releaseStmt->bind_param("s", $lockKey);
+                $releaseStmt->execute();
+                return false;
+            }
+
+            // Send ONE group notification
+            $notification = sprintf(
+                "<b>%s</b>\r\n%s %s с %s по %s (%d дн.)",
+                $fio,
+                $emoji,
+                $absenceType,
+                $startDate,
+                $endDate,
+                $dayCount
+            );
+
+            $userData = $this->databaseService->getUserData($userId);
+            $functionalDirection = $userData['functional_direction'] ?? 'Мобильная бригада';
+
+            error_log("addAbsenceEntries: Sending group notification to functional direction: '{$functionalDirection}'");
+            $this->messageService->sendToHistoryChatByFunctionalDirection($notification, $functionalDirection);
+
+            // Release lock
+            $releaseStmt = $conn->prepare("SELECT RELEASE_LOCK(?)");
+            $releaseStmt->bind_param("s", $lockKey);
+            $releaseStmt->execute();
+            error_log("addAbsenceEntries: Lock released, returning success");
+
+            return true;
+
+        } catch (\Exception $e) {
+            error_log("❌ addAbsenceEntries: Exception - " . $e->getMessage());
+            // Release lock on error
+            $releaseStmt = $conn->prepare("SELECT RELEASE_LOCK(?)");
+            $releaseStmt->bind_param("s", $lockKey);
+            $releaseStmt->execute();
+            return false;
+        }
     }
     
     /**
@@ -1491,7 +1677,7 @@ class TabelEntry
             'РабГарантии' => 'Работы по гарантии',
             // Commissioning activities ("Отдел ПНР")
             'КомплексноеОпробование' => 'Комплексное опробование',
-            'РежимнаяНаладка' => 'Режимная наладка',
+            'РежимнаяНаладка' => 'ИИ на рабочей среде',
             'ПодготовкаКПоездке' => 'Подготовка к служебной поездке',
             'СдачаАвансовогоОтчета' => 'Сдача авансового отчета',
             'ОхраннаяСигнализация' => 'Охранная сигнализация',
@@ -1516,6 +1702,11 @@ class TabelEntry
             'Общая' => 'Общая деятельность',
             // New current activity types
             'УчастиеВЗПИ' => 'Участие в ЗПИ',
+            'ЗПИ_ПровШк' => 'Участие в ЗПИ (Проверка/наладка шкафов)',
+            'ЗПИ_НастОб' => 'Участие в ЗПИ (Настройка/наладка оборудования)',
+            'ЗПИ_ФункПров' => 'Участие в ЗПИ (Функциональная проверка систем)',
+            'ЗПИ_КонтрПр' => 'Участие в ЗПИ (Контроль производства)',
+            'ЗПИ_КомисПр' => 'Участие в ЗПИ (Комиссионная приёмка)',
             'РазрПрограммы' => 'Разработка программы работ',
             'РазрГрафика' => 'Разработка графика работ',
             'ОргДопоставки' => 'Организация допоставки',
@@ -1873,13 +2064,21 @@ class TabelEntry
             
             // Extract work area name from short form activity type
             $workAreaMap = [
-                // OLD: Basic ШМР milestone activities (6 activities)
+                // OLD: Basic ШМР milestone activities (6 activities) - Level 2 under Подготовительные работы
                 'ШМР_ВхКонтр_ПодтВех' => 'Входной контроль',
                 'ШМР_ЗавОбор_ПодтВех' => 'Завоз оборудования на площадку',
                 'ШМР_РасстБлок_ПодтВех' => 'Расстановка блоков',
                 'ШМР_МонтПлощ_ПодтВех' => 'Монтаж площадок обслуживания',
                 'ШМР_МонтЭлУкр_ПодтВех' => 'Монтаж элементов укрытия',
                 'ШМР_СборКровл_ПодтВех' => 'Сборка кровли',
+                
+                // NEW: Level 2 sub-milestones under Внутриблочный монтаж
+                'ШМР_ТехОб_ПодтВех' => 'Технологическое оборудование',
+                'ШМР_ЭлОб_ПодтВех' => 'Электрооборудование',
+                'ШМР_ПожСигн_ПодтВех' => 'Пожарная сигнализация',
+                'ШМР_ОхрСигн_ПодтВех' => 'Охранная сигнализация',
+                'ШМР_Автом_ПодтВех' => 'Автоматизация',
+                'ШМР_ОтоплВент_ПодтВех' => 'Отопление и вентиляция',
                 
                 // OLD: ШМР Technological Equipment Activities (7 activities)
                 'ШМР_МонтажТрубопроводов_ПодтВех' => 'Монтаж трубопроводов',
@@ -2088,7 +2287,7 @@ class TabelEntry
         
         // Project activities ("Проектная деятельность") - use new format
         $projectActivities = [
-            'УчастиеВЗПИ', 'РазрПрограммы', 'РазрГрафика', 'ОргДопоставки', 'УчастиеВОПИ', 'ИспОбМаст', 'ШефНаладочныеРаботы'
+            'УчастиеВЗПИ', 'ЗПИ_ПровШк', 'ЗПИ_НастОб', 'ЗПИ_ФункПров', 'ЗПИ_КонтрПр', 'ЗПИ_КомисПр', 'РазрПрограммы', 'РазрГрафика', 'ОргДопоставки', 'УчастиеВОПИ', 'ИспОбМаст', 'ШефНаладочныеРаботы'
         ];
         
         // Electrical equipment activities ("Электрооборудование") - use new format

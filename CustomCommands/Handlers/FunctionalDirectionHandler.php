@@ -65,6 +65,10 @@ class FunctionalDirectionHandler implements CallbackHandlerInterface
                 error_log("FunctionalDirectionHandler handling supervision selection for user: {$userId}");
                 return $this->handleFunctionalDirectionUpdate($chatId, $userId, 'Шеф-монтаж');
                 
+            case 'Профиль_ФН_Менеджер':
+                error_log("FunctionalDirectionHandler handling manager selection for user: {$userId}");
+                return $this->handleFunctionalDirectionUpdate($chatId, $userId, 'Менеджер');
+                
             case 'Профиль_ФН_Тестировщик':
                 error_log("FunctionalDirectionHandler handling tester selection for user: {$userId}");
                 // Check if user has admin access (level 3+)
@@ -128,6 +132,9 @@ class FunctionalDirectionHandler implements CallbackHandlerInterface
             ],
             [
                 ['text' => '🔧 Шеф-монтаж', 'callback_data' => 'category_Профиль_ФН_ШефМонтаж']
+            ],
+            [
+                ['text' => '📊 Менеджер', 'callback_data' => 'category_Профиль_ФН_Менеджер']
             ]
         ];
         
@@ -141,7 +148,8 @@ class FunctionalDirectionHandler implements CallbackHandlerInterface
         $text = '<b>🎯 Выберите новое функциональное направление:</b>' . PHP_EOL . PHP_EOL .
             '• Мобильная бригада' . PHP_EOL .
             '• Пусконаладка' . PHP_EOL .
-            '• Шеф-монтаж';
+            '• Шеф-монтаж' . PHP_EOL .
+            '• Менеджер';
             
         // Add Тестировщик in text for admins
         if ($userAccessLevel >= DatabaseService::ACCESS_LEVEL_ADMIN) {

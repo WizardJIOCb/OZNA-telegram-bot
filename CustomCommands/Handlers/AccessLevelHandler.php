@@ -7,6 +7,7 @@ use Longman\TelegramBot\Commands\SystemCommands\Services\AdminService;
 use Longman\TelegramBot\Commands\SystemCommands\Services\MessageService;
 use Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService;
 use Longman\TelegramBot\Commands\SystemCommands\Services\ExportSecurityService;
+use Longman\TelegramBot\Commands\SystemCommands\Services\FunctionalDirectionService;
 use Longman\TelegramBot\Commands\SystemCommands\Handlers\ExportKeyHandler;
 use Longman\TelegramBot\Entities\CallbackQuery;
 use Longman\TelegramBot\Entities\ServerResponse;
@@ -52,7 +53,9 @@ class AccessLevelHandler implements CallbackHandlerInterface
             strpos($callbackData, 'acc_lvl_manage_users_page_') === 0 ||
             strpos($callbackData, 'acc_lvl_user_details_') === 0 ||
             strpos($callbackData, 'acc_lvl_set_level_') === 0 ||
-            strpos($callbackData, 'acc_lvl_reset_key_') === 0
+            strpos($callbackData, 'acc_lvl_reset_key_') === 0 ||
+            strpos($callbackData, 'acc_lvl_change_fn_') === 0 ||
+            strpos($callbackData, 'acc_lvl_set_fn_') === 0
         );
         
         $canHandle = $isCategoryAccessLevel || $isAccessLevelManagement;
@@ -184,6 +187,25 @@ class AccessLevelHandler implements CallbackHandlerInterface
             $targetUserId = (int)str_replace('acc_lvl_reset_key_', '', $category);
             error_log("AccessLevelHandler resetting export key for user: {$targetUserId}");
             return $this->resetUserExportKey($chatId, $userId, $targetUserId);
+        }
+        
+        // Показать меню выбора ФН для пользователя (только для суперадминов)
+        if (strpos($category, 'acc_lvl_change_fn_') === 0) {
+            $targetUserId = (int)str_replace('acc_lvl_change_fn_', '', $category);
+            error_log("AccessLevelHandler showing FN selection for user: {$targetUserId}");
+            return $this->showFunctionalDirectionSelection($chatId, $userId, $targetUserId, $userAccessLevel);
+        }
+        
+        // Установить ФН пользователя (только для суперадминов)
+        if (strpos($category, 'acc_lvl_set_fn_') === 0) {
+            // Format: acc_lvl_set_fn_{targetUserId}_{fnShortCode}
+            $parts = explode('_', str_replace('acc_lvl_set_fn_', '', $category));
+            if (count($parts) >= 2) {
+                $targetUserId = (int)$parts[0];
+                $fnShortCode = $parts[1];
+                error_log("AccessLevelHandler setting FN '{$fnShortCode}' for user: {$targetUserId}");
+                return $this->setUserFunctionalDirection($callbackQuery, $userId, $targetUserId, $fnShortCode, $userAccessLevel);
+            }
         }
         
         // Показать меню управления уровнями доступа (старый формат для обратной совместимости)
@@ -503,6 +525,13 @@ class AccessLevelHandler implements CallbackHandlerInterface
         
         if (!empty($levelRow)) {
             $keyboard[] = $levelRow;
+        }
+        
+        // Добавляем кнопку изменения ФН только для Суперадминистраторов
+        if ($currentUserAccessLevel >= DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            $keyboard[] = [
+                ['text' => '🎯 Изменить ФН', 'callback_data' => "acc_lvl_change_fn_{$targetUserId}"]
+            ];
         }
         
         $keyboard[] = [
@@ -837,6 +866,123 @@ class AccessLevelHandler implements CallbackHandlerInterface
             $keyboard = [
                 [
                     ['text' => '⬅️ Назад', 'callback_data' => 'acc_lvl_export_key_resets']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        }
+    }
+
+    /**
+     * Показать меню выбора функционального направления для пользователя
+     */
+    private function showFunctionalDirectionSelection(string $chatId, int $currentUserId, int $targetUserId, int $currentUserAccessLevel): ServerResponse
+    {
+        // Только Суперадминистраторы могут менять ФН пользователей
+        if ($currentUserAccessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ <b>Ограничение доступа</b>\n\n" .
+                "Только Суперадминистратор может изменять функциональное направление пользователей."
+            );
+        }
+        
+        // Получаем данные целевого пользователя
+        $databaseService = new DatabaseService();
+        $userData = $databaseService->getUserData($targetUserId);
+        
+        $fio = $userData['fio'] ?? 'Без ФИО';
+        $currentFn = $userData['functional_direction'] ?? 'Не указано';
+        
+        $message = "🎯 <b>Изменение функционального направления</b>\n\n";
+        $message .= "Пользователь: {$fio}\n";
+        $message .= "User ID: {$targetUserId}\n";
+        $message .= "Текущее ФН: {$currentFn}\n\n";
+        $message .= "Выберите новое функциональное направление:";
+        
+        // Создаем клавиатуру с кнопками выбора ФН
+        // Суперадминистратор может установить любое направление, включая Тестировщик
+        $keyboard = FunctionalDirectionService::createSelectionKeyboard('acc_lvl_set_fn_', $targetUserId, true);
+        
+        // Добавляем кнопку "Назад"
+        $keyboard[] = [
+            ['text' => '⬅️ Назад к профилю', 'callback_data' => "acc_lvl_user_details_{$targetUserId}"]
+        ];
+        
+        $message = $this->ensureUtf8Encoding($message);
+        
+        return $this->messageService->sendMessage($chatId, $message, $keyboard);
+    }
+
+    /**
+     * Установить функциональное направление пользователя
+     */
+    private function setUserFunctionalDirection(CallbackQuery $callbackQuery, int $currentUserId, int $targetUserId, string $fnShortCode, int $currentUserAccessLevel): ServerResponse
+    {
+        $chatId = $callbackQuery->getMessage()->getChat()->getId();
+        
+        // Только Суперадминистраторы могут менять ФН пользователей
+        if ($currentUserAccessLevel < DatabaseService::ACCESS_LEVEL_SUPER_ADMIN) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ <b>Ограничение доступа</b>\n\n" .
+                "Только Суперадминистратор может изменять функциональное направление пользователей."
+            );
+        }
+        
+        // Получаем полное название ФН из короткого кода
+        $fnName = FunctionalDirectionService::getNameFromShortCode($fnShortCode);
+        
+        if ($fnName === null) {
+            return $this->messageService->sendMessage(
+                $chatId,
+                "❌ Неизвестное функциональное направление."
+            );
+        }
+        
+        // Получаем данные целевого пользователя
+        $databaseService = new DatabaseService();
+        $userData = $databaseService->getUserData($targetUserId);
+        $targetFio = $userData['fio'] ?? 'Без ФИО';
+        $oldFn = $userData['functional_direction'] ?? 'Не указано';
+        
+        // Обновляем ФН пользователя
+        $success = $databaseService->setUserFunctionalDirection($targetUserId, $fnName);
+        
+        if ($success) {
+            $text = "✅ <b>Функциональное направление изменено</b>\n\n";
+            $text .= "Пользователь: {$targetFio}\n";
+            $text .= "User ID: {$targetUserId}\n\n";
+            $text .= "Старое ФН: {$oldFn}\n";
+            $text .= "Новое ФН: {$fnName}";
+            
+            // Уведомляем пользователя об изменении ФН
+            try {
+                $userText = "🎯 <b>Изменение функционального направления</b>\n\n";
+                $userText .= "Ваше функциональное направление было изменено суперадминистратором.\n\n";
+                $userText .= "Новое ФН: {$fnName}";
+                $this->messageService->sendMessage($targetUserId, $userText);
+            } catch (\Exception $e) {
+                // Игнорируем ошибки отправки уведомления
+                error_log("AccessLevelHandler: Error sending FN change notification to user {$targetUserId}: " . $e->getMessage());
+            }
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад к профилю', 'callback_data' => "acc_lvl_user_details_{$targetUserId}"]
+                ],
+                [
+                    ['text' => '⬅️ Назад к списку', 'callback_data' => 'acc_lvl_manage_users']
+                ]
+            ];
+            
+            return $this->messageService->sendMessage($chatId, $text, $keyboard);
+        } else {
+            $text = "❌ Ошибка при изменении функционального направления.";
+            
+            $keyboard = [
+                [
+                    ['text' => '⬅️ Назад', 'callback_data' => "acc_lvl_change_fn_{$targetUserId}"]
                 ]
             ];
             

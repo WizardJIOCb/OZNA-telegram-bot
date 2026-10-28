@@ -63,12 +63,16 @@ class FnCommand extends UserCommand
                 ],
                 [
                     ['text' => '🔧 Шеф-монтаж', 'callback_data' => 'category_Профиль_ФН_ШефМонтаж']
+                ],
+                [
+                    ['text' => '📊 Менеджер', 'callback_data' => 'category_Профиль_ФН_Менеджер']
                 ]
             ];
             
             $textOptions = "• Мобильная бригада" . PHP_EOL .
                           "• Пусконаладка" . PHP_EOL .
-                          "• Шеф-монтаж";
+                          "• Шеф-монтаж" . PHP_EOL .
+                          "• Менеджер";
             
             // Добавляем Тестировщик для админов
             if ($userAccessLevel >= \Longman\TelegramBot\Commands\SystemCommands\Services\DatabaseService::ACCESS_LEVEL_ADMIN) {
@@ -108,7 +112,8 @@ class FnCommand extends UserCommand
         $allowedDirections = [
             'Мобильная бригада',
             'Пусконаладка', 
-            'Шеф-монтаж'
+            'Шеф-монтаж',
+            'Менеджер'
         ];
         
         // Проверяем, если это тестировщик, то нужно проверить права
@@ -167,7 +172,8 @@ class FnCommand extends UserCommand
             '<b>Доступные направления:</b>' . PHP_EOL .
             '• Мобильная бригада' . PHP_EOL .
             '• Пусконаладка' . PHP_EOL .
-            '• Шеф-монтаж' . PHP_EOL . PHP_EOL .
+            '• Шеф-монтаж' . PHP_EOL .
+            '• Менеджер' . PHP_EOL . PHP_EOL .
             '<b>Пример:</b> /fn Мобильная бригада',
             ['parse_mode' => 'HTML']
         );

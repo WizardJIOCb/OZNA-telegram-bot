@@ -164,6 +164,13 @@ class CallbackHandlerFactory
             return $category;
         }
         
+        // Handle claims callbacks (claim_ prefix) - return full callback data
+        if (strpos($callbackData, 'claim_') === 0) {
+            $category = $callbackData;
+            error_log("CallbackHandlerFactory extracted claim category: '{$category}' from callback data: '{$callbackData}'");
+            return $category;
+        }
+        
         // Handle access level callbacks (acc_lvl_ prefix) - return full callback data
         if (strpos($callbackData, 'acc_lvl_') === 0) {
             $category = $callbackData; // Pass the full callback data to AccessLevelHandler

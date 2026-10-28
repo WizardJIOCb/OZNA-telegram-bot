@@ -48,6 +48,8 @@ use Longman\TelegramBot\Commands\SystemCommands\Handlers\NotesHandler;
 use Longman\TelegramBot\Commands\SystemCommands\Handlers\GrokHandler;
 use Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectManagementHandler;
 use Longman\TelegramBot\Commands\SystemCommands\Handlers\ProjectCardHandler;
+use Longman\TelegramBot\Commands\SystemCommands\Handlers\TabelManagerHandler;
+use Longman\TelegramBot\Commands\SystemCommands\Handlers\ClaimHandler;
 
 class CallbackqueryCommand extends SystemCommand
 {
@@ -105,6 +107,18 @@ class CallbackqueryCommand extends SystemCommand
         $this->handlerFactory->registerHandler(
             new AdminHandler($adminService, $this->messageService)
         );
+        
+        // Register TabelManagerHandler (must be before AdminHandler in priority to catch tabel management callbacks)
+        error_log("CallbackqueryCommand: Registering TabelManagerHandler");
+        try {
+            $this->handlerFactory->registerHandler(
+                new TabelManagerHandler($this->databaseService, $this->messageService, $adminService)
+            );
+            error_log("CallbackqueryCommand: TabelManagerHandler registered successfully");
+        } catch (\Exception $e) {
+            error_log("CallbackqueryCommand: ERROR registering TabelManagerHandler: " . $e->getMessage());
+        }
+        
         $this->handlerFactory->registerHandler(
             new AccessLevelHandler($adminService, $this->messageService)
         );
@@ -117,6 +131,18 @@ class CallbackqueryCommand extends SystemCommand
         $this->handlerFactory->registerHandler(
             new ProjectModerationHandler($this->databaseService, $this->messageService, $adminService)
         );
+        
+        // Register ClaimHandler for claims management
+        error_log("CallbackqueryCommand: Registering ClaimHandler");
+        try {
+            $this->handlerFactory->registerHandler(
+                new ClaimHandler($this->messageService, $adminService)
+            );
+            error_log("CallbackqueryCommand: ClaimHandler registered successfully");
+        } catch (\Exception $e) {
+            error_log("CallbackqueryCommand: ERROR registering ClaimHandler: " . $e->getMessage());
+            error_log("CallbackqueryCommand: ClaimHandler trace: " . $e->getTraceAsString());
+        }
         
         error_log("CallbackqueryCommand: Registering NotesHandler");
         try {
@@ -305,7 +331,9 @@ class CallbackqueryCommand extends SystemCommand
             strpos($callback_data, 'proj_report_') === 0 ||
             strpos($callback_data, 'proj_notes_') === 0 ||
             strpos($callback_data, 'proj_mod_') === 0 ||
+            strpos($callback_data, 'tbl_set_') === 0 ||
             strpos($callback_data, 'pm_') === 0 ||
+            strpos($callback_data, 'claim_') === 0 ||
             strpos($callback_data, 'cat_Гарантии') === 0;
         
         if (!$hasValidPrefix) {

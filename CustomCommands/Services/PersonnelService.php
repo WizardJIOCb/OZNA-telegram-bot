@@ -749,4 +749,128 @@ class PersonnelService
         
         return ''; // No project found
     }
+
+    /**
+     * Get employees currently on vacation or sick leave for a given functional direction.
+     * Queries ozna_tabel for absence entries (Отпуск / Больничный) where
+     * at least one entry covers today's date.
+     *
+     * @param string $functionalDirection - "Мобильная бригада", "Шеф-монтаж", or "Пусконаладка"
+     * @param string $absenceType - 'Отпуск' or 'Больничный'
+     * @return array - Array of ['fio' => ..., 'start_date' => ..., 'end_date' => ..., 'days' => ...]
+     */
+    public function getAbsenceEmployees(string $functionalDirection, string $absenceType): array
+    {
+        error_log("PersonnelService::getAbsenceEmployees called - fn: '{$functionalDirection}', type: '{$absenceType}'");
+
+        $users = $this->getUsersByFunctionalDirection($functionalDirection);
+
+        if (empty($users)) {
+            return [];
+        }
+
+        $emoji = $absenceType === 'Больничный' ? '🏥' : '🏖';
+        $today = new DateTime();
+        $todayStr = $today->format('d.m.Y');
+        $conn = $this->databaseService->getConnection();
+        $result = [];
+
+        foreach ($users as $user) {
+            $userId = $user['user_id'];
+
+            // Find all absence entries for this user of this type within the last 180 days
+            $pattern = "%{$emoji}%: {$absenceType}%";
+            $query = "SELECT message, dt FROM tg_bot.ozna_tabel 
+                      WHERE user_id = ? AND message LIKE ? 
+                      AND dt >= DATE_SUB(NOW(), INTERVAL 180 DAY)
+                      ORDER BY dt ASC";
+
+            $stmt = $conn->prepare($query);
+            $stmt->bind_param("is", $userId, $pattern);
+            $stmt->execute();
+            $queryResult = $stmt->get_result();
+
+            $absenceDates = [];
+
+            while ($row = $queryResult->fetch_assoc()) {
+                // Extract date from message: "🏥 DD.MM.YYYY: Больничный" or "🏖 DD.MM.YYYY: Отпуск"
+                if (preg_match('/' . preg_quote($emoji, '/') . '\s*(\d{2}\.\d{2}\.\d{4}):\s*' . preg_quote($absenceType, '/') . '/', $row['message'], $matches)) {
+                    $absenceDates[] = $matches[1];
+                }
+            }
+
+            if (empty($absenceDates)) {
+                continue;
+            }
+
+            // Check if today falls within any absence date
+            $todayInAbsence = in_array($todayStr, $absenceDates);
+
+            if (!$todayInAbsence) {
+                continue; // This user is not currently absent
+            }
+
+            // Find continuous range containing today
+            // Sort dates chronologically
+            usort($absenceDates, function ($a, $b) {
+                $dateA = DateTime::createFromFormat('d.m.Y', $a);
+                $dateB = DateTime::createFromFormat('d.m.Y', $b);
+                return $dateA <=> $dateB;
+            });
+
+            $startDate = $absenceDates[0];
+            $endDate = $absenceDates[count($absenceDates) - 1];
+
+            // Find the continuous group that includes today
+            $groups = [];
+            $currentGroup = [$absenceDates[0]];
+            for ($i = 1; $i < count($absenceDates); $i++) {
+                $prevDt = DateTime::createFromFormat('d.m.Y', $absenceDates[$i - 1]);
+                $currDt = DateTime::createFromFormat('d.m.Y', $absenceDates[$i]);
+                $gap = $prevDt->diff($currDt)->days;
+
+                if ($gap <= 1) {
+                    $currentGroup[] = $absenceDates[$i];
+                } else {
+                    $groups[] = $currentGroup;
+                    $currentGroup = [$absenceDates[$i]];
+                }
+            }
+            $groups[] = $currentGroup;
+
+            // Find the group containing today
+            foreach ($groups as $group) {
+                if (in_array($todayStr, $group)) {
+                    $startDate = $group[0];
+                    $endDate = $group[count($group) - 1];
+                    break;
+                }
+            }
+
+            $totalDays = count(array_filter($absenceDates, function ($d) use ($startDate, $endDate) {
+                $dt = DateTime::createFromFormat('d.m.Y', $d);
+                $s = DateTime::createFromFormat('d.m.Y', $startDate);
+                $e = DateTime::createFromFormat('d.m.Y', $endDate);
+                return $dt >= $s && $dt <= $e;
+            }));
+
+            $result[] = [
+                'user_id' => $userId,
+                'fio' => $user['fio'],
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+                'days' => $totalDays
+            ];
+        }
+
+        // Sort by end_date ascending (soonest return first)
+        usort($result, function ($a, $b) {
+            $dateA = DateTime::createFromFormat('d.m.Y', $a['end_date']);
+            $dateB = DateTime::createFromFormat('d.m.Y', $b['end_date']);
+            return $dateA <=> $dateB;
+        });
+
+        error_log("PersonnelService::getAbsenceEmployees - Found " . count($result) . " employees on {$absenceType}");
+        return $result;
+    }
 }

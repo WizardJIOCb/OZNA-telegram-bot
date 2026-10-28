@@ -1,0 +1,10 @@
+RewriteEngine On
+RewriteBase /tg/ozna/app/
+
+# If file/dir exists, serve it directly
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Otherwise serve index.html (SPA routing)
+RewriteRule ^ index.html [L]
